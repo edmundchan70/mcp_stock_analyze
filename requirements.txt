@@ -1,0 +1,5 @@
+tvDatafeed>=2.1.0
+pandas>=2.0.0
+numpy>=1.24.0
+mcp-agent>=0.2.6
+openai>=2.16
