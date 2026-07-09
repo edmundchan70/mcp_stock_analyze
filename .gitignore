@@ -1,0 +1,30 @@
+# Environments & Secrets
+.env
+.env.*
+! .env.example
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+pyvenv.cfg
+
+# IDEs and Code Editors
+.cursor/
+.vscode/
+.idea/
+
+# Python Cache and System Files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.pypy_cache/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+*.CSV

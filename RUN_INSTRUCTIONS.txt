@@ -1,0 +1,77 @@
+VCP ANALYSIS AGENT - RUN INSTRUCTIONS
+=====================================
+
+SETUP:
+------
+1. Activate your virtual environment:
+   Windows:   venv\Scripts\activate
+   Linux/Mac: source venv/bin/activate
+
+2. Verify packages are installed:
+   pip install -r requirements.txt
+
+3. Set OpenAI API key:
+   Option 1: Environment variable
+     export OPENAI_API_KEY=your_key_here
+   
+   Option 2: .env file (create in project root)
+     OPENAI_API_KEY=your_key_here
+   
+   Option 3: mcp_agent.secrets.yaml
+     openai:
+       api_key: your_key_here
+
+RUNNING THE AGENT:
+------------------
+1. Run the agent:
+   python agent_example_debug.py
+
+2. When prompted, enter:
+   - Stock symbol (e.g., AAPL, TSLA, MSFT, ALNT)
+   - Exchange (e.g., NASDAQ, NYSE)
+
+3. The agent will:
+   - Fetch historical stock data (300+ days)
+   - Analyze VCP patterns
+   - Report contractions (#1 oldest to #3+ newest)
+   - Show pivot points
+   - Indicate if valid VCP setup exists
+
+EXAMPLE:
+--------
+$ python agent_example_debug.py
+
+Enter stock symbol: AAPL
+Enter exchange: NASDAQ
+
+[Agent fetches data and analyzes VCP pattern...]
+
+OUTPUT:
+-------
+The agent will provide:
+- Previous VCP Setup: Yes/No
+- Condition checks (trend, volatility, volume, near highs)
+- Detailed contraction information
+- Pivot points with ranges
+- LLM-generated analysis and insights
+
+REPORT FILES:
+-------------
+After analysis completes, a report file is automatically saved:
+- Filename: VCP_Report_{SYMBOL}_{EXCHANGE}_{TIMESTAMP}.txt
+- Example: VCP_Report_AAPL_NASDAQ_20260209_143022.txt
+- Location: Same directory as the script
+- Contains: Full VCP analysis with timestamp and all details
+
+TROUBLESHOOTING:
+---------------
+- If "Module not found": Activate venv and install requirements
+- If "API key error": Check OPENAI_API_KEY is set correctly
+- If "Insufficient data": Stock may not have enough history (need 200+ days)
+- If TradingView errors: Check internet connection
+
+TESTING:
+--------
+You can test individual components:
+- vcp_scan.py: python -c "from vcp_scan import scan_vcp; scan_vcp('alnt.csv')"
+- tradingview_data.py: python -c "from tradingview_data import get_stock_data; print(get_stock_data('AAPL', 'NASDAQ', n_bars=10))"

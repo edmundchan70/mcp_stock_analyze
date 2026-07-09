@@ -1,5 +1,6 @@
-tvDatafeed>=2.1.0
+git+https://github.com/rongardF/tvdatafeed.git@main
 pandas>=2.0.0
 numpy>=1.24.0
 mcp-agent>=0.2.6
 openai>=2.16
+python-dotenv>=1.0.0
