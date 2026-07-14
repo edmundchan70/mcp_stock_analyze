@@ -11,6 +11,8 @@ import pandas as pd
 from datetime import datetime
 import logging
 
+from models import StockCandle, StockDataSummary, StockDataResult
+
 logger = logging.getLogger(__name__)
 
 # Singleton instance for TvDatafeed (optional credentials)
@@ -186,6 +188,82 @@ def get_stock_data(
     except Exception as e:
         logger.error(f"Failed to retrieve data for {symbol} on {exchange}: {str(e)}")
         raise
+
+
+def get_stock_data_pydantic(
+    symbol: str,
+    exchange: str,
+    interval: Literal["daily", "weekly", "monthly", "1min", "5min", "15min", "30min", "1hour", "4hour"] = "daily",
+    n_bars: int = 100,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> StockDataResult:
+    """
+    Retrieve stock data and return as a validated Pydantic StockDataResult model.
+    
+    This provides full type safety and validation for the returned data.
+    Each candle is validated to ensure non-negative prices and volumes.
+    
+    Args:
+        symbol: Stock symbol
+        exchange: Exchange name
+        interval: Data interval
+        n_bars: Number of bars to retrieve
+        username: TradingView username (optional)
+        password: TradingView password (optional)
+    
+    Returns:
+        StockDataResult with validated candles and summary
+    
+    Raises:
+        ValueError: If data validation fails or parameters are invalid
+        Exception: If data retrieval fails
+    """
+    df = get_stock_data(
+        symbol=symbol,
+        exchange=exchange,
+        interval=interval,
+        n_bars=n_bars,
+        username=username,
+        password=password,
+        return_format="dataframe",
+    )
+
+    # Convert DataFrame to validated StockCandle objects
+    candles: list[StockCandle] = []
+    for idx, row in df.iterrows():
+        candle = StockCandle(
+            datetime=idx.to_pydatetime() if hasattr(idx, 'to_pydatetime') else idx,
+            open=float(row.get("open", 0)),
+            high=float(row.get("high", 0)),
+            low=float(row.get("low", 0)),
+            close=float(row.get("close", 0)),
+            volume=float(row.get("volume", 0)),
+        )
+        candles.append(candle)
+
+    # Build validated summary
+    summary = StockDataSummary(
+        symbol=symbol,
+        exchange=exchange,
+        interval=interval,
+        total_bars=len(df),
+        date_range_start=str(df.index[0]),
+        date_range_end=str(df.index[-1]),
+        price_min=float(df["low"].min()),
+        price_max=float(df["high"].max()),
+        current_price=float(df["close"].iloc[-1]),
+        average_volume=float(df["volume"].mean()),
+    )
+
+    # Return fully validated result
+    return StockDataResult(
+        symbol=symbol,
+        exchange=exchange,
+        interval=interval,
+        candles=candles,
+        summary=summary,
+    )
 
 
 def get_stock_data_dict(

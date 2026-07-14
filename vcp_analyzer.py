@@ -37,7 +37,6 @@ import sys
 from typing import Optional
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass
 from dotenv import load_dotenv
 
 # Load environment variables from .env file FIRST (before any imports)
@@ -47,30 +46,8 @@ load_dotenv()
 from tradingview_data import get_stock_data_for_agent, get_stock_data_dict
 from vcp_scan import analyze_vcp_for_agent
 
-
-# =============================================================================
-# Data Structures
-# =============================================================================
-
-@dataclass
-class DataResult:
-    """Result from the Data Retrieval Agent."""
-    success: bool
-    symbol: str
-    exchange: str
-    data_summary: str = ""       # Human-readable summary of fetched data
-    agent_response: str = ""     # Full raw response from the data retrieval agent
-    error: str = ""              # Error message if failed
-    attempts: int = 0            # Number of retries made
-
-
-@dataclass
-class AnalysisResult:
-    """Result from the VCP Analysis Agent."""
-    success: bool
-    report: str = ""             # Full VCP analysis report
-    rating: str = "N/A"          # Pattern rating: A+, A, B, N/A
-    error: str = ""              # Error message if failed
+# Import Pydantic models
+from models import DataResult, AnalysisResult
 
 
 # =============================================================================
