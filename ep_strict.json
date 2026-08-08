@@ -1,0 +1,186 @@
+{
+  "as_of": "2026-08-08T10:00:02.788692Z",
+  "universe_source": "screener",
+  "session": "rth",
+  "gates": {
+    "baseline": {
+      "min_price": 1.0,
+      "min_gap_pct": 4.0,
+      "min_rvol10": 1.5,
+      "min_market_cap": null,
+      "max_market_cap": null,
+      "min_avg_dollar_volume_50d": null,
+      "min_event_dollar_volume": null
+    },
+    "strict": {
+      "min_price": 10.0,
+      "min_gap_pct": 8.0,
+      "min_rvol10": 3.0,
+      "min_market_cap": 300000000.0,
+      "max_market_cap": 10000000000.0,
+      "min_avg_dollar_volume_50d": 5000000.0,
+      "min_event_dollar_volume": 20000000.0
+    }
+  },
+  "strict": {
+    "count": 13,
+    "stocks": [
+      {
+        "symbol": "DOCS",
+        "exchange": "NYSE",
+        "price": 27.39,
+        "market_cap": 4923449517.579198,
+        "avg_dollar_volume_50d": 120793532.40133336,
+        "gap_pct": 88.11713455953534,
+        "rvol10": 12.288247878660561,
+        "event_dollar_volume": 1788996803.88,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "FIGS",
+        "exchange": "NYSE",
+        "price": 14.26,
+        "market_cap": 2369159845.0000005,
+        "avg_dollar_volume_50d": 36281392.708666675,
+        "gap_pct": 35.23131672597864,
+        "rvol10": 3.2965447397411265,
+        "event_dollar_volume": 160502374.76,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "QNST",
+        "exchange": "NASDAQ",
+        "price": 21.08,
+        "market_cap": 1210948389.0,
+        "avg_dollar_volume_50d": 12126681.731833335,
+        "gap_pct": 29.369250985545335,
+        "rvol10": 8.019951069278072,
+        "event_dollar_volume": 103369700.88,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "PUBM",
+        "exchange": "NASDAQ",
+        "price": 17.78,
+        "market_cap": 825762365.0,
+        "avg_dollar_volume_50d": 7723469.513333335,
+        "gap_pct": 28.783382789317496,
+        "rvol10": 7.616712537648552,
+        "event_dollar_volume": 58421203.96,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "MITK",
+        "exchange": "NASDAQ",
+        "price": 18.49,
+        "market_cap": 834312712.0,
+        "avg_dollar_volume_50d": 17237423.71408333,
+        "gap_pct": 21.93932183224273,
+        "rvol10": 3.6414597026583513,
+        "event_dollar_volume": 38445295.519999996,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "CRSR",
+        "exchange": "NASDAQ",
+        "price": 14.35,
+        "market_cap": 1552339472.0,
+        "avg_dollar_volume_50d": 28829568.948583342,
+        "gap_pct": 19.528746465598502,
+        "rvol10": 5.513840118729714,
+        "event_dollar_volume": 136599673.35,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "SPT",
+        "exchange": "NASDAQ",
+        "price": 10.34,
+        "market_cap": 619630074.0000001,
+        "avg_dollar_volume_50d": 10016483.480333332,
+        "gap_pct": 17.338217338217337,
+        "rvol10": 3.440997710547999,
+        "event_dollar_volume": 35106667.86,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "INOD",
+        "exchange": "NASDAQ",
+        "price": 62.33,
+        "market_cap": 2143070780.0,
+        "avg_dollar_volume_50d": 131187051.28966664,
+        "gap_pct": 15.943799633475866,
+        "rvol10": 3.245153385594234,
+        "event_dollar_volume": 298841060.34,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "AMPH",
+        "exchange": "NASDAQ",
+        "price": 20.78,
+        "market_cap": 883938522.0,
+        "avg_dollar_volume_50d": 11193870.628749998,
+        "gap_pct": 13.478041393235749,
+        "rvol10": 3.3010081695888713,
+        "event_dollar_volume": 27034655.32,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "DV",
+        "exchange": "NYSE",
+        "price": 13.21,
+        "market_cap": 2027261924.0,
+        "avg_dollar_volume_50d": 40416350.522,
+        "gap_pct": 12.98035866780529,
+        "rvol10": 15.884128306501134,
+        "event_dollar_volume": 507310552.04,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "FOXF",
+        "exchange": "NASDAQ",
+        "price": 21.13,
+        "market_cap": 886110483.0,
+        "avg_dollar_volume_50d": 10496586.680833332,
+        "gap_pct": 12.566277836691416,
+        "rvol10": 3.811423750129039,
+        "event_dollar_volume": 41893838.23,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "FLR",
+        "exchange": "NYSE",
+        "price": 57.0,
+        "market_cap": 7961183807.0,
+        "avg_dollar_volume_50d": 131966330.57733335,
+        "gap_pct": 11.835897435897442,
+        "rvol10": 3.075909535766491,
+        "event_dollar_volume": 453684945.0,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      },
+      {
+        "symbol": "GRDN",
+        "exchange": "NYSE",
+        "price": 43.83,
+        "market_cap": 2776120154.0,
+        "avg_dollar_volume_50d": 16304973.136666667,
+        "gap_pct": 9.323536863440587,
+        "rvol10": 4.101521476013833,
+        "event_dollar_volume": 45806250.87,
+        "force_included": false,
+        "as_of": "2026-08-08"
+      }
+    ]
+  }
+}
