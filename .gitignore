@@ -28,3 +28,11 @@ __pycache__/
 Thumbs.db
 
 *.CSV
+
+# Local scan outputs
+ep_scan*.json
+
+# Type check / coverage
+.mypy_cache/
+.coverage
+htmlcov/
