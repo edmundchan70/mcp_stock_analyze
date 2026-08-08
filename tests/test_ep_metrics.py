@@ -19,7 +19,7 @@ def test_normalize_row_maps_tradingview_fields():
             "gap": 8.2,
             "relative_volume_10d_calc": 3.1,
             "market_cap_basic": 2_500_000_000,
-            "average_volume_60d_calc": 50_000,
+            "AvgValue.Traded_60d": 12_500_000,
             "Value.Traded": 40_000_000,
             "exchange": "NASDAQ",
         },
@@ -33,8 +33,22 @@ def test_normalize_row_maps_tradingview_fields():
     assert stock.rvol10 == 3.1
     assert stock.market_cap == 2_500_000_000
     assert stock.event_dollar_volume == 40_000_000
-    # 198.5 * 50_000 = 9_925_000
-    assert stock.avg_dollar_volume_50d == 9_925_000.0
+    assert stock.avg_dollar_volume_50d == 12_500_000.0
+
+
+def test_normalize_prefers_computed_gap_from_open_and_prior_close():
+    stock = normalize_row(
+        {
+            "name": "NASDAQ:GAP",
+            "close": 110.0,
+            "open": 110.0,
+            "prior_close": 100.0,
+            "gap": 99.0,  # stale / wrong — must not win over open/prior_close
+            "relative_volume_10d_calc": 2.0,
+        },
+        as_of=date(2026, 8, 8),
+    )
+    assert stock.gap_pct == 10.0
 
 
 def test_normalize_row_computes_gap_when_gap_column_missing():

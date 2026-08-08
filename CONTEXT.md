@@ -29,7 +29,7 @@ Dollars traded on the gap day (price × volume for that session).
 _Avoid_: ADV, liquidity (unspecified)
 
 **Average Daily Dollar Volume**:
-Typical dollars traded per day over a lookback (here, 50 days), measuring pre-gap liquidity.
+Typical dollars traded per day over a multi-week lookback (~50 sessions), measuring pre-gap liquidity.
 _Avoid_: average volume (shares only)
 
 **Force Include**:

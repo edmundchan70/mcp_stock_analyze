@@ -19,6 +19,7 @@ EP_COLUMNS = [
     "relative_volume_10d_calc",
     "market_cap_basic",
     "average_volume_60d_calc",
+    "AvgValue.Traded_60d",
     "Value.Traded",
     "exchange",
 ]

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Literal, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Iterable, Literal, Mapping, Optional, Sequence, Set
 
+from stock_analyze.data.symbols import SymbolKey, row_symbol_key
 from stock_analyze.models.ep import EpScanResult, EpStock, StockBucket
 from stock_analyze.scanners.ep.gates import BASELINE, STRICT, passes_baseline, passes_strict
 from stock_analyze.scanners.ep.metrics import normalize_row
 
-ForceKey = Tuple[str, str]
+ForceKey = SymbolKey
 
 
 def run_ep_scan(
@@ -72,17 +73,6 @@ def load_force_csv(path: str) -> list[ForceKey]:
     return out
 
 
-def _row_key(row: Mapping[str, Any]) -> ForceKey:
-    name = str(row.get("name") or "")
-    if ":" in name:
-        exch, sym = name.split(":", 1)
-        return sym.strip().upper(), exch.strip().upper()
-    return (
-        str(row.get("symbol", "")).strip().upper(),
-        str(row.get("exchange", "NASDAQ")).strip().upper(),
-    )
-
-
 def merge_force_rows(
     screener_rows: Iterable[Mapping[str, Any]],
     force_keys: Sequence[ForceKey],
@@ -93,10 +83,10 @@ def merge_force_rows(
     screener_count = 0
     for row in screener_rows:
         screener_count += 1
-        by_key[_row_key(row)] = dict(row)
+        by_key[row_symbol_key(row)] = dict(row)
 
     for row in force_rows:
-        key = _row_key(row)
+        key = row_symbol_key(row)
         if key not in by_key:
             by_key[key] = dict(row)
 

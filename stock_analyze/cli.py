@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
+from stock_analyze.data.symbols import row_symbol_key
 from stock_analyze.data.tradingview import enrich_from_ohlcv
 from stock_analyze.scanners.ep.gates import BASELINE
 from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
@@ -54,12 +55,7 @@ def run_ep_command(
     force_rows: list = []
     if force_keys:
         force_rows = fetch_symbols(force_keys)
-        found_keys = set()
-        for r in force_rows:
-            name = str(r.get("name") or "")
-            if ":" in name:
-                exch, sym = name.split(":", 1)
-                found_keys.add((sym.upper(), exch.upper()))
+        found_keys = {row_symbol_key(r) for r in force_rows}
         for sym, exch in force_keys:
             if (sym, exch) not in found_keys:
                 try:

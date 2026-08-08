@@ -71,12 +71,11 @@ def enrich_from_ohlcv(symbol: str, exchange: str, n_bars: int = 60) -> dict[str,
     prior_close = float(prev["close"])
     close = float(last["close"])
     volume = float(last["volume"])
-    avg_vol_10 = float(df["volume"].iloc[-11:-1].mean())
-    avg_vol_50 = (
-        float(df["volume"].iloc[-51:-1].mean())
-        if len(df) >= 51
-        else float(df["volume"].iloc[:-1].mean())
-    )
+    hist = df.iloc[:-1]
+    window = hist.iloc[-50:] if len(hist) >= 50 else hist
+    avg_vol_10 = float(hist["volume"].iloc[-10:].mean()) if len(hist) >= 10 else float(hist["volume"].mean())
+    dollar_vol = (window["close"] * window["volume"]).astype(float)
+    avg_dollar_50 = float(dollar_vol.mean()) if len(dollar_vol) else 0.0
     rvol10 = volume / avg_vol_10 if avg_vol_10 else 0.0
     gap = (open_price - prior_close) / prior_close * 100.0 if prior_close else 0.0
 
@@ -91,8 +90,7 @@ def enrich_from_ohlcv(symbol: str, exchange: str, n_bars: int = 60) -> dict[str,
         "volume": volume,
         "relative_volume_10d_calc": rvol10,
         "Value.Traded": close * volume,
-        "average_volume_60d_calc": avg_vol_50,
-        "avg_dollar_volume_50d": close * avg_vol_50,
+        "avg_dollar_volume_50d": avg_dollar_50,
     }
 
 
