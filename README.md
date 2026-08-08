@@ -1,6 +1,6 @@
 # stock_analyze
 
-Local stock scanners. **Agent 1** is an Episodic Pivot (EP) technical filter (TradingView → Baseline / Strict JSON). **Agent 2** enriches those candidates with Tavily news + an OpenRouter LLM catalyst summary.
+Local stock scanners. **Agent 1** is an Episodic Pivot (EP) technical filter (TradingView → Baseline / Strict JSON). **Agent 2** enriches candidates with Tavily news + an OpenRouter LLM catalyst summary. **Agent 3** re-fetches news and assigns an **EP Rating** (1–5); you chart the 4–5★ shortlist manually. Pivot/base auto-detect is **v2** (see glossary).
 
 Domain terms: [glossary.md](glossary.md), [CONTEXT.md](CONTEXT.md).
 
@@ -117,7 +117,8 @@ Takes Agent 1 JSON (or a bare stock list), searches recent news via Tavily, comp
 |----------|----------|---------|
 | `TAVILY_API_KEY` | yes | — |
 | `OPENROUTER_API_KEY` | yes | — |
-| `CATALYST_LLM_MODEL` | no | `openai/gpt-4o-mini` |
+| `CATALYST_LLM_MODEL` | no | `deepseek/deepseek-v4-flash-0731` |
+| `EP_RATING_LLM_MODEL` | no | `deepseek/deepseek-v4-pro` |
 | `OPENROUTER_BASE_URL` | no | `https://openrouter.ai/api/v1` |
 
 Put keys in `.env` (loaded automatically by the CLI) or the environment.
@@ -154,18 +155,40 @@ python -m stock_analyze catalyst --in ep_scan.json --select baseline --out ep_ca
 Library API for agents:
 
 ```python
-from stock_analyze.agents import enrich_with_catalysts
+from stock_analyze.agents import enrich_with_catalysts, rate_ep_catalysts
 
 enriched = enrich_with_catalysts(strict_stocks)
+rated = rate_ep_catalysts(enriched)
+```
+
+## EP Rating (Agent 3)
+
+Takes Agent 2 JSON, re-fetches news via Tavily, rates each name 1–5 for EP-catalyst fit (DeepSeek V4 Pro by default), applies hard caps, and sorts best→worst. **Console defaults to 4–5★ only**; `--out` always writes the full 1–5 list. Chart review is manual in v1 (see [glossary.md](glossary.md) EP Rating rubric).
+
+```bash
+# After catalyst enrich
+python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json
+
+# Print all ratings on console
+python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json --min-rating 1
+```
+
+### Daily chain
+
+```bash
+python -m stock_analyze ep --select strict --out ep_strict.json
+python -m stock_analyze catalyst --in ep_strict.json --out ep_catalyst.json
+python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json
+# Chart the printed 4–5★ names yourself
 ```
 
 ## Layout
 
 ```
 stock_analyze/
-  agents/         # Agent 2 catalyst enricher
+  agents/         # Agent 2 catalyst + Agent 3 EP rating
   data/           # TradingView screener + OHLCV helpers
-  models/         # EP + catalyst JSON schemas
+  models/         # EP + catalyst + rating JSON schemas
   scanners/
     ep/           # gates, metrics, runner
   cli.py

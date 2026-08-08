@@ -1,6 +1,6 @@
 # Stock Analyze — EP Scanner
 
-Screens US equities for Episodic Pivot setups. Agent 1 is a local technical filter that emits structured candidate lists for later news and reasoning stages.
+Screens US equities for Episodic Pivot setups. Agent 1 is a local technical filter; Agent 2 compresses news catalysts; Agent 3 rates EP-catalyst fit (1–5) for manual chart review.
 
 ## Language
 
@@ -47,3 +47,15 @@ _Avoid_: fundamental shock (as a field name), news blurb, catalyst_text
 **Catalyst Type**:
 The classification of a Catalyst: `EARNINGS`, `GUIDANCE`, `CONTRACT`, `FDA`, `PR`, or `UNKNOWN`. `PR` is residual material company news outside the other types — not generic media coverage.
 _Avoid_: category, news_type, event_type
+
+**EP Rating**:
+A 1–5 score of how well a name’s news/catalyst matches a textbook Episodic Pivot (catalyst substance first; technical JSON only down-caps). `5=textbook` (must look: EARNINGS/GUIDANCE shock + strong volume), `4=acceptable` (real catalyst; chart later), `3=better_not`, `2=no`, `1=bs`. Full rubric and hard caps in [glossary.md](glossary.md).
+_Avoid_: Unrated, star grade, EP score (as a field name)
+
+**EP Catalyst Match**:
+True when EP Rating is 4 or 5 — the default shortlist for manual chart review.
+_Avoid_: trade signal, buy flag
+
+**Trade Opportunity Auto-Detect** (v2, deferred):
+Future automated detection of pivot/base trade setup quality from OHLCV (base tightness, extension, cleared base high). Not part of v1; chart read stays manual.
+_Avoid_: auto-trade, setup scorer (until v2 ships)

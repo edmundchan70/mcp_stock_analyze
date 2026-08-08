@@ -1,4 +1,4 @@
-"""CLI: python -m stock_analyze ep|catalyst ..."""
+"""CLI: python -m stock_analyze ep|catalyst|rate ..."""
 
 from __future__ import annotations
 
@@ -12,10 +12,12 @@ from typing import Literal, Optional
 from dotenv import load_dotenv
 
 from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
+from stock_analyze.agents.rating import rate_ep_catalysts
 from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
 from stock_analyze.data.symbols import row_symbol_key
 from stock_analyze.data.tradingview import enrich_from_ohlcv
 from stock_analyze.models.catalyst import CatalystBucket
+from stock_analyze.models.rating import EpRatedStock, RatedBucket
 from stock_analyze.scanners.ep.gates import BASELINE
 from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
 
@@ -48,6 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which Agent 1 bucket to enrich (default: strict)",
     )
     cat.add_argument("-v", "--verbose", action="store_true")
+
+    rate = sub.add_parser("rate", help="Agent 3 EP Rating (re-fetch news + rate 1-5)")
+    rate.add_argument("--in", dest="in_path", required=True, help="Agent 2 catalyst JSON or stock list")
+    rate.add_argument("--out", type=str, default=None, help="Write full rated JSON to this path")
+    rate.add_argument(
+        "--min-rating",
+        type=int,
+        default=4,
+        choices=(1, 2, 3, 4, 5),
+        help="Minimum stars to print on console (default: 4). --out always has all ratings.",
+    )
+    rate.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
@@ -118,6 +132,40 @@ def run_catalyst_command(
     return 0
 
 
+def _format_rating_table(stocks: list[EpRatedStock]) -> str:
+    if not stocks:
+        return "(no names at this min-rating)"
+    lines = ["stars  symbol   type       rationale"]
+    for s in stocks:
+        lines.append(
+            f"{s.ep_rating}★     {s.symbol:<8} {s.catalyst_type:<10} {s.ep_rationale}"
+        )
+    return "\n".join(lines)
+
+
+def run_rate_command(
+    *,
+    in_path: str,
+    out_path: Optional[str],
+    min_rating: int,
+) -> int:
+    load_dotenv()
+    payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
+    stocks = load_stocks_from_input(payload, select="strict")
+    rated = rate_ep_catalysts(stocks)
+    bucket = RatedBucket(count=len(rated), stocks=rated)
+    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        matches = sum(1 for s in rated if s.ep_catalyst_match)
+        print(f"Wrote {out_path} (count={bucket.count}, ep_catalyst_match={matches})")
+
+    visible = [s for s in rated if s.ep_rating >= min_rating]
+    print(_format_rating_table(visible))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -145,6 +193,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         except Exception as exc:
             logger.error("Catalyst enrich failed: %s", exc)
+            return 1
+    if args.command == "rate":
+        try:
+            return run_rate_command(
+                in_path=args.in_path,
+                out_path=args.out,
+                min_rating=args.min_rating,
+            )
+        except Exception as exc:
+            logger.error("EP rating failed: %s", exc)
             return 1
     parser.error(f"Unknown command: {args.command}")
     return 2

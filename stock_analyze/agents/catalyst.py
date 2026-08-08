@@ -19,7 +19,7 @@ from stock_analyze.models.ep import EpStock
 logger = logging.getLogger(__name__)
 
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_CATALYST_LLM_MODEL = "openai/gpt-4o-mini"
+DEFAULT_CATALYST_LLM_MODEL = "deepseek/deepseek-v4-flash-0731"
 
 SYSTEM_PROMPT = (
     "You are a financial news compressor. Summarize the fundamental driver behind "
