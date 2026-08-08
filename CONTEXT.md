@@ -39,3 +39,11 @@ _Avoid_: watchlist override, manual ticker
 **Universe**:
 The set of symbols considered in one scan run (screener results merged with force includes).
 _Avoid_: watchlist, ticker list (unless meaning the CSV input file)
+
+**Catalyst**:
+A clear, news-backed fundamental driver behind the gap (earnings surprise, guidance, contract, FDA, or material PR). Absence is still recorded (`catalyst_found=false`).
+_Avoid_: fundamental shock (as a field name), news blurb, catalyst_text
+
+**Catalyst Type**:
+The classification of a Catalyst: `EARNINGS`, `GUIDANCE`, `CONTRACT`, `FDA`, `PR`, or `UNKNOWN`. `PR` is residual material company news outside the other types — not generic media coverage.
+_Avoid_: category, news_type, event_type

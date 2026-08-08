@@ -1,6 +1,6 @@
 # stock_analyze
 
-Local stock scanners. Phase 1 ships an **Episodic Pivot (EP)** technical filter: pull US listed names from TradingView, apply Baseline / Strict gates in Python, write JSON. No LLM. No raw OHLC in the output.
+Local stock scanners. **Agent 1** is an Episodic Pivot (EP) technical filter (TradingView → Baseline / Strict JSON). **Agent 2** enriches those candidates with Tavily news + an OpenRouter LLM catalyst summary.
 
 Domain terms: [glossary.md](glossary.md), [CONTEXT.md](CONTEXT.md).
 
@@ -107,12 +107,65 @@ Each stock:
 
 Pick Strict for downstream work: read `strict.stocks` (or run with `--select strict`).
 
+## Catalyst enrich (Agent 2)
+
+Takes Agent 1 JSON (or a bare stock list), searches recent news via Tavily, compresses with an OpenRouter chat model, and writes enriched JSON. Always emits every input stock; missing/unclear news or API errors set `catalyst_found=false` and `catalyst_type=UNKNOWN` with a clear `catalyst_summary`.
+
+### Env
+
+| Variable | Required | Default |
+|----------|----------|---------|
+| `TAVILY_API_KEY` | yes | — |
+| `OPENROUTER_API_KEY` | yes | — |
+| `CATALYST_LLM_MODEL` | no | `openai/gpt-4o-mini` |
+| `OPENROUTER_BASE_URL` | no | `https://openrouter.ai/api/v1` |
+
+Put keys in `.env` (loaded automatically by the CLI) or the environment.
+
+```bash
+# Enrich Strict bucket from an Agent 1 file
+python -m stock_analyze catalyst --in ep_strict.json --out ep_catalyst.json
+
+# Enrich Baseline instead
+python -m stock_analyze catalyst --in ep_scan.json --select baseline --out ep_catalyst.json
+```
+
+### Output
+
+```json
+{
+  "count": 1,
+  "stocks": [
+    {
+      "symbol": "NVDA",
+      "exchange": "NASDAQ",
+      "price": 125.0,
+      "gap_pct": 11.2,
+      "rvol10": 4.5,
+      "event_dollar_volume": 150000000.0,
+      "catalyst_found": true,
+      "catalyst_type": "EARNINGS",
+      "catalyst_summary": "Q2 EPS +45% YoY. FY guidance raised 15%."
+    }
+  ]
+}
+```
+
+Library API for agents:
+
+```python
+from stock_analyze.agents import enrich_with_catalysts
+
+enriched = enrich_with_catalysts(strict_stocks)
+```
+
 ## Layout
 
 ```
 stock_analyze/
+  agents/         # Agent 2 catalyst enricher
   data/           # TradingView screener + OHLCV helpers
-  models/         # EP JSON schemas
+  models/         # EP + catalyst JSON schemas
   scanners/
     ep/           # gates, metrics, runner
   cli.py

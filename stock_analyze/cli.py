@@ -1,18 +1,21 @@
-"""CLI: python -m stock_analyze ep [--csv PATH] [--out PATH] [--select baseline|strict|both]"""
+"""CLI: python -m stock_analyze ep|catalyst ..."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 from datetime import date
 from pathlib import Path
 from typing import Literal, Optional
 
+from dotenv import load_dotenv
+
+from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
 from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
 from stock_analyze.data.symbols import row_symbol_key
 from stock_analyze.data.tradingview import enrich_from_ohlcv
+from stock_analyze.models.catalyst import CatalystBucket
 from stock_analyze.scanners.ep.gates import BASELINE
 from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
 
@@ -34,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ep.add_argument("--limit", type=int, default=300, help="Max screener rows")
     ep.add_argument("-v", "--verbose", action="store_true")
+
+    cat = sub.add_parser("catalyst", help="Agent 2 catalyst intelligence (Tavily + OpenRouter)")
+    cat.add_argument("--in", dest="in_path", required=True, help="Agent 1 JSON or bare stock list")
+    cat.add_argument("--out", type=str, default=None, help="Write enriched JSON to this path")
+    cat.add_argument(
+        "--select",
+        choices=("baseline", "strict", "both"),
+        default="strict",
+        help="Which Agent 1 bucket to enrich (default: strict)",
+    )
+    cat.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
@@ -81,6 +95,29 @@ def run_ep_command(
     return 0
 
 
+def run_catalyst_command(
+    *,
+    in_path: str,
+    out_path: Optional[str],
+    select: Literal["baseline", "strict", "both"],
+) -> int:
+    load_dotenv()
+    payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
+    stocks = load_stocks_from_input(payload, select=select)
+    enriched = enrich_with_catalysts(stocks)
+    bucket = CatalystBucket(count=len(enriched), stocks=enriched)
+    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+
+    found = sum(1 for s in enriched if s.catalyst_found)
+    unknown = len(enriched) - found
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(f"Wrote {out_path} (count={bucket.count}, catalyst_found={found}, unknown={unknown})")
+    else:
+        print(text)
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -98,6 +135,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         except Exception as exc:
             logger.error("EP scan failed: %s", exc)
+            return 1
+    if args.command == "catalyst":
+        try:
+            return run_catalyst_command(
+                in_path=args.in_path,
+                out_path=args.out,
+                select=args.select,
+            )
+        except Exception as exc:
+            logger.error("Catalyst enrich failed: %s", exc)
             return 1
     parser.error(f"Unknown command: {args.command}")
     return 2
