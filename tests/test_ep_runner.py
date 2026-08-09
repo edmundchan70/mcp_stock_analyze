@@ -73,3 +73,39 @@ def test_force_included_symbol_flagged():
         universe_source="hybrid",
     )
     assert result.strict.stocks[0].force_included is True
+
+
+def test_apply_gates_false_keeps_failing_strict_names_in_both_buckets():
+    """Run all pasted: skip gate predicates; every enriched stock is in both buckets."""
+    rows = [
+        {
+            "name": "NASDAQ:WEAK",
+            "close": 5.0,
+            "gap": 5.0,
+            "relative_volume_10d_calc": 2.0,
+            "market_cap_basic": 50_000_000,
+            "Value.Traded": 1_000_000,
+            "average_volume_60d_calc": 100_000,
+        },
+        {
+            "name": "NASDAQ:STRONG",
+            "close": 25.0,
+            "gap": 9.0,
+            "relative_volume_10d_calc": 4.0,
+            "market_cap_basic": 800_000_000,
+            "Value.Traded": 30_000_000,
+            "average_volume_60d_calc": 400_000,
+        },
+    ]
+    result = run_ep_scan(
+        rows=rows,
+        as_of=date(2026, 8, 8),
+        force_keys={("WEAK", "NASDAQ"), ("STRONG", "NASDAQ")},
+        universe_source="force",
+        apply_gates=False,
+    )
+
+    assert result.baseline.count == 2
+    assert result.strict.count == 2
+    assert {s.symbol for s in result.strict.stocks} == {"WEAK", "STRONG"}
+    assert all(s.force_included for s in result.strict.stocks)

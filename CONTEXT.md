@@ -33,12 +33,20 @@ Typical dollars traded per day over a multi-week lookback (~50 sessions), measur
 _Avoid_: average volume (shares only)
 
 **Force Include**:
-A symbol that must be evaluated even if it did not appear in the screener universe. Interactive Daily Run accepts a free-text paste; a cheap LLM cleans it into `(symbol, exchange)` keys (default exchange NASDAQ), surfaces rejected tokens/errors, then merges into the Universe. No CSV path.
+A symbol evaluated even if it did not appear in the screener universe. Interactive Daily Run accepts a free-text paste; a cheap LLM cleans it into `(symbol, exchange)` keys (default exchange NASDAQ), surfaces rejected tokens/errors, then on confirm may become the sole Universe (screener skipped). Skip leaves today’s screener workflow unchanged. No CSV path.
 _Avoid_: watchlist override, manual ticker, force symbols, force CSV
 
 **Universe**:
-The set of symbols considered in one scan run (screener results merged with force includes).
+The set of symbols considered in one scan run. Sources: screener-only (`universe_source=screener`), paste-only (`universe_source=force` when Force Include is confirmed and screener is off), or hybrid (screener + force — not used on the paste-skip-screener path).
 _Avoid_: watchlist, ticker list (unless meaning a pasted Force Include list)
+
+**Apply Gate filter**:
+After metrics fetch, keep only names that pass Baseline/Strict (survivors continue). Auto Run always applies Gate after paste; Manual Run offers this vs Run all pasted.
+_Avoid_: soft filter on, gate on
+
+**Run all pasted**:
+Manual-only choice after Force Include paste: fetch metrics for every pasted name, skip gate predicates, continue all enriched names to Catalyst. No Gate select prompt.
+_Avoid_: ungated mode, bypass filter (as a type name)
 
 **Catalyst**:
 A clear, news-backed fundamental driver behind the gap (earnings surprise, guidance, contract, FDA, or material PR). Absence is still recorded (`catalyst_found=false`).
@@ -65,11 +73,11 @@ One stamped execution of the configured agent chain (Agent 1, optionally Agent 2
 _Avoid_: job, batch, session (unless meaning market session)
 
 **Auto Run**:
-The wizard path that runs a full Pipeline Type (v1: Daily EP scan = Agent 1 → Catalyst → EP Rating) after gate and name prompts.
+The wizard path that runs a full Pipeline Type (v1: Daily EP scan = Agent 1 → Catalyst → EP Rating). Order: Pipeline → Force Include → (if paste: Gate always; if Skip: Gate) → name. Paste always applies Gate (no Run all).
 _Avoid_: quick mode, default mode
 
 **Manual Run**:
-The wizard path that chooses Gate, whether to run Catalyst, and Analysis Method before executing.
+The wizard path that chooses steps before executing. Order: Force Include first → (if paste: Apply Gate filter vs Run all pasted; Gate select only if Apply) → Catalyst → Analysis Method → name. Skip Force Include keeps Gate → Catalyst → Analysis → name.
 _Avoid_: step mode, custom mode
 
 **Pipeline Type**:

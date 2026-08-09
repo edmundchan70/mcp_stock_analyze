@@ -158,6 +158,64 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
         # No → stay in paste loop (re-prompt text)
 
 
+def _prompt_apply_gate_or_run_all() -> Optional[bool]:
+    """Manual paste path: Apply Gate filter vs Run all pasted.
+
+    Returns True = Apply Gate filter, False = Run all pasted, None = cancelled.
+    """
+    value = _select(
+        "Apply Gate filter or Run all pasted?",
+        [
+            Choice(
+                "Apply Gate filter — Fetch metrics, apply Baseline/Strict, only survivors continue",
+                value="apply",
+            ),
+            Choice(
+                "Run all pasted — Fetch metrics for all pasted names, skip gates, continue all to Catalyst",
+                value="run_all",
+            ),
+        ],
+        default="apply",
+    )
+    if value is None:
+        return None
+    return value == "apply"
+
+
+def _prompt_catalyst_and_method() -> tuple[Optional[bool], Optional[AnalysisMethod], bool]:
+    """Return (run_catalyst, analysis_method, cancelled)."""
+    catalyst = _select(
+        "Run Catalyst search (Agent 2)?",
+        [
+            Choice("Yes — search news / compress catalyst", value="yes"),
+            Choice("No — Agent 1 only (EP Rating will not run)", value="no"),
+        ],
+        default="yes",
+    )
+    if catalyst is None:
+        return None, None, True
+
+    run_catalyst = catalyst == "yes"
+    analysis_method: Optional[AnalysisMethod] = None
+
+    if run_catalyst:
+        method = _select(
+            "Analysis Method",
+            [Choice("EP Rating", value="ep_rating")],
+            default="ep_rating",
+        )
+        if method is None:
+            return None, None, True
+        analysis_method = method  # type: ignore[assignment]
+    else:
+        questionary.print(
+            "Catalyst skipped → EP Rating will not run. Writing Agent 1 Run Artifact only.",
+            style="bold fg:yellow",
+        )
+
+    return run_catalyst, analysis_method, False
+
+
 def _prompt_run_name() -> Optional[str]:
     return _text("Run name (used in output folder / file names)", default="daily")
 
@@ -171,12 +229,17 @@ def _run_auto() -> int:
     if pipeline is None:
         return 2
 
-    select = _prompt_gate()
-    if select is None:
-        return 2
-
     force_keys, cancelled = _prompt_force_include()
     if cancelled:
+        return 2
+
+    pasted = bool(force_keys)
+    # Auto + paste: always Apply Gate filter (no "Run all")
+    use_screener = not pasted
+    apply_gates = True
+
+    select = _prompt_gate()
+    if select is None:
         return 2
 
     name = _prompt_run_name()
@@ -190,6 +253,8 @@ def _run_auto() -> int:
             run_catalyst=True,
             analysis_method="ep_rating",
             force_keys=force_keys or None,
+            use_screener=use_screener,
+            apply_gates=apply_gates,
             pipeline_type=pipeline,
             output_root=Path("output"),
         )
@@ -198,40 +263,33 @@ def _run_auto() -> int:
 
 
 def _run_manual() -> int:
-    select = _prompt_gate()
-    if select is None:
-        return 2
-
-    catalyst = _select(
-        "Run Catalyst search (Agent 2)?",
-        [
-            Choice("Yes — search news / compress catalyst", value="yes"),
-            Choice("No — Agent 1 only (EP Rating will not run)", value="no"),
-        ],
-        default="yes",
-    )
-    if catalyst is None:
-        return 2
-
-    run_catalyst = catalyst == "yes"
-    analysis_method: Optional[AnalysisMethod] = None
-
-    if run_catalyst:
-        method = _select(
-            "Analysis Method",
-            [Choice("EP Rating", value="ep_rating")],
-            default="ep_rating",
-        )
-        if method is None:
-            return 2
-        analysis_method = method  # type: ignore[assignment]
-    else:
-        questionary.print(
-            "Catalyst skipped → EP Rating will not run. Writing Agent 1 Run Artifact only.",
-            style="bold fg:yellow",
-        )
-
     force_keys, cancelled = _prompt_force_include()
+    if cancelled:
+        return 2
+
+    pasted = bool(force_keys)
+    use_screener = not pasted
+    apply_gates = True
+    select: Optional[GateSelect]
+
+    if pasted:
+        apply_gates_choice = _prompt_apply_gate_or_run_all()
+        if apply_gates_choice is None:
+            return 2
+        apply_gates = apply_gates_choice
+        if apply_gates:
+            select = _prompt_gate()
+            if select is None:
+                return 2
+        else:
+            # Run all pasted: no Gate select; both buckets hold all enriched names
+            select = "both"
+    else:
+        select = _prompt_gate()
+        if select is None:
+            return 2
+
+    run_catalyst, analysis_method, cancelled = _prompt_catalyst_and_method()
     if cancelled:
         return 2
 
@@ -242,10 +300,12 @@ def _run_manual() -> int:
     result = run_daily(
         RunConfig(
             name=name,
-            select=select,
-            run_catalyst=run_catalyst,
+            select=select,  # type: ignore[arg-type]
+            run_catalyst=run_catalyst,  # type: ignore[arg-type]
             analysis_method=analysis_method,
             force_keys=force_keys or None,
+            use_screener=use_screener,
+            apply_gates=apply_gates,
             pipeline_type="daily_ep_scan",
             output_root=Path("output"),
         )

@@ -11,16 +11,18 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **RVOL10** | `volume / 10-day average volume`. |
 | **Event Day Dollar Volume** | Dollars traded on the gap day. |
 | **Average Daily Dollar Volume** | Typical daily dollars traded over ~50 days (pre-gap liquidity). Screener uses TradingView `AvgValue.Traded_60d` as the nearest bulk field. |
-| **Force Include** | Pasted symbol (LLM-cleaned) always evaluated alongside the screener universe. |
-| **Universe** | Screener symbols merged with force includes for one scan. |
+| **Force Include** | Pasted symbol (LLM-cleaned). On confirm may be the sole Universe (screener skipped); Skip leaves screener workflow unchanged. |
+| **Universe** | Symbols in one scan: screener-only, paste-only (`universe_source=force`), or hybrid. |
+| **Apply Gate filter** | Fetch metrics, apply Baseline/Strict; only survivors continue. Auto always; Manual choice after paste. |
+| **Run all pasted** | Manual-only: fetch metrics for all pasted names, skip gates, continue all to Catalyst. |
 | **Catalyst** | News-backed fundamental driver behind the gap; absence recorded as `catalyst_found=false`. |
 | **Catalyst Type** | `EARNINGS \| GUIDANCE \| CONTRACT \| FDA \| PR \| UNKNOWN` (`PR` = residual material company news). |
 | **EP Rating** | 1–5 how well news matches a textbook EP. See rubric below. |
 | **EP Catalyst Match** | `ep_rating >= 4` — default names to chart manually. |
 | **Trade Opportunity Auto-Detect** | **v2 (deferred):** OHLCV pivot/base setup detection. Not in v1. |
 | **Daily Run** | One stamped execution of the configured agent chain. |
-| **Auto Run** | Wizard path: full Pipeline Type after gate + name (v1 = Daily EP scan). |
-| **Manual Run** | Wizard path: choose Gate, Catalyst yes/no, Analysis Method. |
+| **Auto Run** | Wizard: Pipeline → Force Include → Gate → name. Paste skips screener and always applies Gate. |
+| **Manual Run** | Wizard: Force Include first; paste offers Apply Gate vs Run all, then Catalyst / Analysis / name. |
 | **Pipeline Type** | Scan family for a Daily Run; v1 only `daily_ep_scan`. |
 | **Analysis Method** | Post-Catalyst scoring; v1 only EP Rating. |
 | **Run Artifact** | Stamped `{name}_agentN.json` under `output/<date>/<time>_<name>/`. |

@@ -50,6 +50,8 @@ class RunConfig:
     analysis_method: Optional[AnalysisMethod] = "ep_rating"
     limit: int = 300
     force_keys: Optional[list[SymbolKey]] = None
+    use_screener: bool = True
+    apply_gates: bool = True
     output_root: Path = field(default_factory=lambda: Path("output"))
     min_rating: int = 4
     pipeline_type: str = "daily_ep_scan"
@@ -84,19 +86,29 @@ def execute_ep_scan(
     force_keys: Optional[Sequence[SymbolKey]] = None,
     select: GateSelect,
     limit: int,
+    use_screener: bool = True,
+    apply_gates: bool = True,
 ) -> dict[str, Any]:
     """Run Agent 1 and return selected JSON payload.
 
     Always attaches ``_counts`` (baseline/strict) for CLI logging; callers that
     persist the payload should strip it via :func:`strip_internal_keys`.
+
+    When ``use_screener`` is False, the Universe is only ``force_keys`` (paste-only).
     """
     force_key_list: list[SymbolKey] = list(force_keys or [])
-    screener_rows = fetch_us_ep_universe(
-        min_price=BASELINE.min_price,
-        min_gap_pct=BASELINE.min_gap_pct,
-        min_rvol10=BASELINE.min_rvol10,
-        limit=limit,
-    )
+    if not use_screener and not force_key_list:
+        raise ValueError("use_screener=False requires non-empty force_keys")
+
+    if use_screener:
+        screener_rows = fetch_us_ep_universe(
+            min_price=BASELINE.min_price,
+            min_gap_pct=BASELINE.min_gap_pct,
+            min_rvol10=BASELINE.min_rvol10,
+            limit=limit,
+        )
+    else:
+        screener_rows = []
 
     force_rows: list = []
     if force_key_list:
@@ -115,6 +127,7 @@ def execute_ep_scan(
         as_of=date.today(),
         force_keys=force_set,
         universe_source=source,
+        apply_gates=apply_gates,
     )
     payload = result.model_dump_selected(select)
     payload["_counts"] = {
@@ -158,6 +171,8 @@ def run_daily(config: RunConfig) -> RunResult:
     try:
         name = sanitize_run_name(config.name)
         force_keys = list(config.force_keys or [])
+        if not config.use_screener and not force_keys:
+            raise ValueError("use_screener=False requires non-empty force_keys")
         stamped = RunConfig(
             name=name,
             select=config.select,
@@ -165,6 +180,8 @@ def run_daily(config: RunConfig) -> RunResult:
             analysis_method=config.analysis_method,
             limit=config.limit,
             force_keys=force_keys or None,
+            use_screener=config.use_screener,
+            apply_gates=config.apply_gates,
             output_root=config.output_root,
             min_rating=config.min_rating,
             pipeline_type=config.pipeline_type,
@@ -183,6 +200,8 @@ def run_daily(config: RunConfig) -> RunResult:
         "select": config.select,
         "run_catalyst": config.run_catalyst,
         "analysis_method": config.analysis_method,
+        "use_screener": config.use_screener,
+        "apply_gates": config.apply_gates,
         "force_include_count": len(force_keys),
         "started_at": started,
         "status": "started",
@@ -195,6 +214,8 @@ def run_daily(config: RunConfig) -> RunResult:
             force_keys=force_keys or None,
             select=config.select,
             limit=config.limit,
+            use_screener=config.use_screener,
+            apply_gates=config.apply_gates,
         )
         agent1 = strip_internal_keys(agent1_raw)
         agent1_path = run_dir / f"{name}_agent1.json"

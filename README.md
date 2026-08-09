@@ -31,11 +31,11 @@ Interactive wizard (arrow keys + Enter). Chains Agent 1 → 2 → 3 and stamps *
 python -m stock_analyze
 ```
 
-**Auto Run:** Pipeline Type (**Daily EP scan**) → Gate (**Strict (recommended)** / Baseline / Both) → Force Include (**Skip** / **Paste symbols…**) → run name → full chain.
+**Auto Run:** Pipeline Type (**Daily EP scan**) → Force Include (**Skip** / **Paste symbols…**) → Gate (**Strict (recommended)** / Baseline / Both) → run name → full chain. Paste confirmed → screener off; Agent 1 runs only on pasted names and **always** applies Gate (no “Run all”).
 
-**Manual Run:** Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → Force Include → run name.
+**Manual Run:** Force Include first. **Skip** → Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → run name. **Paste confirmed** → choose **Apply Gate filter** (then Gate select) or **Run all pasted** (skip gates; no Gate select) → Catalyst / Analysis → run name.
 
-**Force Include paste:** free-text list (e.g. `( JHX, KGC, LUNR, MB, )`) → cheap OpenRouter LLM cleans to tickers → shows accepted + rejected/errors → confirm → merge into Universe. Needs `OPENROUTER_API_KEY` only when pasting (Skip does not).
+**Force Include paste:** free-text list (e.g. `( JHX, KGC, LUNR, MB, )`) → cheap OpenRouter LLM cleans to tickers → shows accepted + rejected/errors → confirm → Universe is paste-only (screener off). Skip leaves today’s screener → Gate → Agent 1 path. Needs `OPENROUTER_API_KEY` only when pasting (Skip does not).
 
 Outputs land under:
 

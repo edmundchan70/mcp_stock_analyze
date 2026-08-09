@@ -20,8 +20,13 @@ def run_ep_scan(
     as_of: Optional[date] = None,
     force_keys: Optional[Set[ForceKey]] = None,
     universe_source: UniverseSource = "screener",
+    apply_gates: bool = True,
 ) -> EpScanResult:
-    """Filter normalized rows into baseline and strict buckets."""
+    """Filter normalized rows into baseline and strict buckets.
+
+    When ``apply_gates`` is False, every successfully enriched stock is placed
+    in both buckets (still marked ``force_included`` when in ``force_keys``).
+    """
     day = as_of or datetime.now(timezone.utc).date()
     force = force_keys or set()
     force_upper = {(s.upper(), e.upper()) for s, e in force}
@@ -37,8 +42,12 @@ def run_ep_scan(
             stock = stock.model_copy(update={"force_included": True})
         stocks.append(stock)
 
-    baseline_stocks = [s for s in stocks if passes_baseline(s)]
-    strict_stocks = [s for s in stocks if passes_strict(s)]
+    if apply_gates:
+        baseline_stocks = [s for s in stocks if passes_baseline(s)]
+        strict_stocks = [s for s in stocks if passes_strict(s)]
+    else:
+        baseline_stocks = list(stocks)
+        strict_stocks = list(stocks)
 
     return EpScanResult(
         as_of=datetime.now(timezone.utc),

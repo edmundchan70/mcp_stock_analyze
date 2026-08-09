@@ -1,4 +1,4 @@
-"""Seams: create_run_dir, sanitize_run_name, run_daily."""
+"""Seams: create_run_dir, sanitize_run_name, execute_ep_scan, run_daily."""
 
 from __future__ import annotations
 
@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from stock_analyze.pipeline import RunConfig, create_run_dir, run_daily, sanitize_run_name
+from stock_analyze.pipeline import (
+    RunConfig,
+    create_run_dir,
+    execute_ep_scan,
+    run_daily,
+    sanitize_run_name,
+)
 
 
 def test_sanitize_run_name_allows_safe_chars_only():
@@ -191,6 +197,147 @@ def test_run_daily_passes_force_keys_to_execute_ep_scan(
     assert seen.get("force_keys") == keys
     meta = json.loads((result.run_dir / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["force_include_count"] == 2
+
+
+def test_execute_ep_scan_paste_only_skips_screener(monkeypatch: pytest.MonkeyPatch):
+    """use_screener=False → no screener call; universe is force keys only."""
+    called = {"screener": False}
+
+    def boom_screener(**kwargs):
+        called["screener"] = True
+        raise AssertionError("screener must not run when use_screener=False")
+
+    force_row = {
+        "name": "NYSE:JHX",
+        "close": 25.0,
+        "gap": 9.0,
+        "relative_volume_10d_calc": 4.0,
+        "market_cap_basic": 800_000_000,
+        "Value.Traded": 30_000_000,
+        "average_volume_60d_calc": 400_000,
+    }
+
+    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", boom_screener)
+    monkeypatch.setattr(
+        "stock_analyze.pipeline.fetch_symbols",
+        lambda keys: [force_row],
+    )
+
+    payload = execute_ep_scan(
+        force_keys=[("JHX", "NYSE")],
+        select="strict",
+        limit=300,
+        use_screener=False,
+        apply_gates=True,
+    )
+
+    assert called["screener"] is False
+    assert payload["universe_source"] == "force"
+    assert payload["strict"]["count"] == 1
+    assert payload["strict"]["stocks"][0]["symbol"] == "JHX"
+    assert payload["strict"]["stocks"][0]["force_included"] is True
+
+
+def test_execute_ep_scan_use_screener_false_requires_force_keys():
+    with pytest.raises(ValueError, match="force_keys"):
+        execute_ep_scan(
+            force_keys=None,
+            select="strict",
+            limit=300,
+            use_screener=False,
+        )
+
+
+def test_execute_ep_scan_apply_gates_false_keeps_weak_names(monkeypatch: pytest.MonkeyPatch):
+    weak_row = {
+        "name": "NASDAQ:WEAK",
+        "close": 5.0,
+        "gap": 5.0,
+        "relative_volume_10d_calc": 2.0,
+        "market_cap_basic": 50_000_000,
+        "Value.Traded": 1_000_000,
+        "average_volume_60d_calc": 100_000,
+    }
+
+    monkeypatch.setattr(
+        "stock_analyze.pipeline.fetch_us_ep_universe",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("no screener")),
+    )
+    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda keys: [weak_row])
+
+    payload = execute_ep_scan(
+        force_keys=[("WEAK", "NASDAQ")],
+        select="both",
+        limit=300,
+        use_screener=False,
+        apply_gates=False,
+    )
+
+    assert payload["strict"]["count"] == 1
+    assert payload["strict"]["stocks"][0]["symbol"] == "WEAK"
+    assert payload["baseline"]["count"] == 1
+
+
+def test_execute_ep_scan_skip_path_still_calls_screener(monkeypatch: pytest.MonkeyPatch):
+    """No force_keys → screener still used (Skip Force Include path)."""
+    called = {"screener": False}
+
+    def fake_screener(**kwargs):
+        called["screener"] = True
+        return [
+            {
+                "name": "NASDAQ:NVDA",
+                "close": 125.0,
+                "gap": 11.0,
+                "relative_volume_10d_calc": 4.0,
+                "market_cap_basic": 800_000_000,
+                "Value.Traded": 100_000_000,
+                "average_volume_60d_calc": 1_000_000,
+            }
+        ]
+
+    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", fake_screener)
+    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda keys: [])
+
+    payload = execute_ep_scan(select="strict", limit=300)
+
+    assert called["screener"] is True
+    assert payload["universe_source"] == "screener"
+
+
+def test_run_daily_records_use_screener_and_apply_gates_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixed = datetime(2026, 8, 9, 20, 0, 0)
+    monkeypatch.setattr("stock_analyze.pipeline._now", lambda: fixed)
+
+    seen: dict = {}
+
+    def fake_scan(**kwargs):
+        seen.update(kwargs)
+        return {"strict": {"count": 0, "stocks": []}, "universe_source": "force"}
+
+    monkeypatch.setattr("stock_analyze.pipeline.execute_ep_scan", fake_scan)
+
+    cfg = RunConfig(
+        name="paste",
+        select="strict",
+        run_catalyst=False,
+        analysis_method=None,
+        force_keys=[("JHX", "NYSE")],
+        use_screener=False,
+        apply_gates=False,
+        output_root=tmp_path,
+    )
+    result = run_daily(cfg)
+
+    assert result.exit_code == 0
+    assert seen.get("use_screener") is False
+    assert seen.get("apply_gates") is False
+    meta = json.loads((result.run_dir / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["use_screener"] is False
+    assert meta["apply_gates"] is False
+    assert meta["force_include_count"] == 1
 
 
 def test_run_daily_failure_keeps_agent1_and_marks_failed(
