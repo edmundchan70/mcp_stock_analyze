@@ -153,8 +153,10 @@ def test_cli_catalyst_selects_strict_and_writes_envelope(tmp_path, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(cli_mod, "enrich_with_catalysts", fake_enrich)
-    monkeypatch.setattr(cli_mod, "load_dotenv", lambda: None)
+    import stock_analyze.pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "enrich_with_catalysts", fake_enrich)
+    monkeypatch.setattr(pipeline_mod, "load_dotenv", lambda: None)
 
     rc = cli_mod.main(["catalyst", "--in", str(in_path), "--out", str(out_path)])
     assert rc == 0

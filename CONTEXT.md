@@ -59,3 +59,27 @@ _Avoid_: trade signal, buy flag
 **Trade Opportunity Auto-Detect** (v2, deferred):
 Future automated detection of pivot/base trade setup quality from OHLCV (base tightness, extension, cleared base high). Not part of v1; chart read stays manual.
 _Avoid_: auto-trade, setup scorer (until v2 ships)
+
+**Daily Run**:
+One stamped execution of the configured agent chain (Agent 1, optionally Agent 2 and an Analysis Method), writing Run Artifacts under a single output folder.
+_Avoid_: job, batch, session (unless meaning market session)
+
+**Auto Run**:
+The wizard path that runs a full Pipeline Type (v1: Daily EP scan = Agent 1 → Catalyst → EP Rating) after gate and name prompts.
+_Avoid_: quick mode, default mode
+
+**Manual Run**:
+The wizard path that chooses Gate, whether to run Catalyst, and Analysis Method before executing.
+_Avoid_: step mode, custom mode
+
+**Pipeline Type**:
+The scan family selected for a Daily Run. v1 has only `daily_ep_scan`.
+_Avoid_: scanner mode, workflow type
+
+**Analysis Method**:
+The post-Catalyst scoring step. v1 has only EP Rating.
+_Avoid_: agent 3 (as a type name), scorer type
+
+**Run Artifact**:
+A JSON file written for one agent step of a Daily Run under `output/<date>/<time>_<name>/`, named `{name}_agentN.json`.
+_Avoid_: scan dump, output blob

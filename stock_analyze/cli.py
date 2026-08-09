@@ -1,32 +1,28 @@
-"""CLI: python -m stock_analyze ep|catalyst|rate ..."""
+"""CLI: python -m stock_analyze [ep|catalyst|rate] ...  (no args → interactive wizard)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-from datetime import date
 from pathlib import Path
 from typing import Literal, Optional
 
-from dotenv import load_dotenv
-
-from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
-from stock_analyze.agents.rating import rate_ep_catalysts
-from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
-from stock_analyze.data.symbols import row_symbol_key
-from stock_analyze.data.tradingview import enrich_from_ohlcv
-from stock_analyze.models.catalyst import CatalystBucket
-from stock_analyze.models.rating import EpRatedStock, RatedBucket
-from stock_analyze.scanners.ep.gates import BASELINE
-from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
+from stock_analyze.agents.catalyst import load_stocks_from_input
+from stock_analyze.pipeline import (
+    execute_catalyst_enrich,
+    execute_ep_rating,
+    execute_ep_scan,
+    format_rating_table,
+    strip_internal_keys,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stock analyze scanners")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
 
     ep = sub.add_parser("ep", help="Episodic Pivot Agent 1 technical filter")
     ep.add_argument("--csv", type=str, default=None, help="Force-include CSV (symbol,exchange)")
@@ -55,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     rate.add_argument("--in", dest="in_path", required=True, help="Agent 2 catalyst JSON or stock list")
     rate.add_argument("--out", type=str, default=None, help="Write full rated JSON to this path")
     rate.add_argument(
+        "--select",
+        choices=("baseline", "strict", "both"),
+        default="strict",
+        help="Which bucket to read when input is Agent 1-shaped (default: strict)",
+    )
+    rate.add_argument(
         "--min-rating",
         type=int,
         default=4,
@@ -72,38 +74,16 @@ def run_ep_command(
     select: Literal["baseline", "strict", "both"],
     limit: int,
 ) -> int:
-    force_keys = load_force_csv(csv_path) if csv_path else []
-    screener_rows = fetch_us_ep_universe(
-        min_price=BASELINE.min_price,
-        min_gap_pct=BASELINE.min_gap_pct,
-        min_rvol10=BASELINE.min_rvol10,
-        limit=limit,
-    )
-
-    force_rows: list = []
-    if force_keys:
-        force_rows = fetch_symbols(force_keys)
-        found_keys = {row_symbol_key(r) for r in force_rows}
-        for sym, exch in force_keys:
-            if (sym, exch) not in found_keys:
-                try:
-                    force_rows.append(enrich_from_ohlcv(sym, exch))
-                except Exception as exc:
-                    logger.warning("Force-include enrich failed for %s:%s: %s", exch, sym, exc)
-
-    rows, force_set, source = merge_force_rows(screener_rows, force_keys, force_rows)
-    result = run_ep_scan(
-        rows=rows,
-        as_of=date.today(),
-        force_symbols=force_set,
-        universe_source=source,
-    )
-    payload = result.model_dump_selected(select)
+    raw = execute_ep_scan(csv_path=csv_path, select=select, limit=limit)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
-
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
-        print(f"Wrote {out_path} (baseline={result.baseline.count}, strict={result.strict.count})")
+        print(
+            f"Wrote {out_path} "
+            f"(baseline={counts.get('baseline', '?')}, strict={counts.get('strict', '?')})"
+        )
     else:
         print(text)
     return 0
@@ -115,32 +95,19 @@ def run_catalyst_command(
     out_path: Optional[str],
     select: Literal["baseline", "strict", "both"],
 ) -> int:
-    load_dotenv()
     payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
     stocks = load_stocks_from_input(payload, select=select)
-    enriched = enrich_with_catalysts(stocks)
-    bucket = CatalystBucket(count=len(enriched), stocks=enriched)
-    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+    bucket = execute_catalyst_enrich(stocks)
+    text = json.dumps(bucket, indent=2)
 
-    found = sum(1 for s in enriched if s.catalyst_found)
-    unknown = len(enriched) - found
+    found = sum(1 for s in bucket.get("stocks") or [] if s.get("catalyst_found"))
+    unknown = len(bucket.get("stocks") or []) - found
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
-        print(f"Wrote {out_path} (count={bucket.count}, catalyst_found={found}, unknown={unknown})")
+        print(f"Wrote {out_path} (count={bucket.get('count')}, catalyst_found={found}, unknown={unknown})")
     else:
         print(text)
     return 0
-
-
-def _format_rating_table(stocks: list[EpRatedStock]) -> str:
-    if not stocks:
-        return "(no names at this min-rating)"
-    lines = ["stars  symbol   type       rationale"]
-    for s in stocks:
-        lines.append(
-            f"{s.ep_rating}★     {s.symbol:<8} {s.catalyst_type:<10} {s.ep_rationale}"
-        )
-    return "\n".join(lines)
 
 
 def run_rate_command(
@@ -148,21 +115,19 @@ def run_rate_command(
     in_path: str,
     out_path: Optional[str],
     min_rating: int,
+    select: Literal["baseline", "strict", "both"] = "strict",
 ) -> int:
-    load_dotenv()
     payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
-    stocks = load_stocks_from_input(payload, select="strict")
-    rated = rate_ep_catalysts(stocks)
-    bucket = RatedBucket(count=len(rated), stocks=rated)
-    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+    stocks = load_stocks_from_input(payload, select=select)
+    bucket, rated = execute_ep_rating(stocks)
+    text = json.dumps(bucket, indent=2)
 
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
         matches = sum(1 for s in rated if s.ep_catalyst_match)
-        print(f"Wrote {out_path} (count={bucket.count}, ep_catalyst_match={matches})")
+        print(f"Wrote {out_path} (count={bucket.get('count')}, ep_catalyst_match={matches})")
 
-    visible = [s for s in rated if s.ep_rating >= min_rating]
-    print(_format_rating_table(visible))
+    print(format_rating_table(rated, min_rating=min_rating))
     return 0
 
 
@@ -173,6 +138,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(levelname)s %(message)s",
     )
+
+    if not args.command:
+        from stock_analyze.interactive import run_interactive
+
+        return run_interactive()
+
     if args.command == "ep":
         try:
             return run_ep_command(
@@ -200,6 +171,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 in_path=args.in_path,
                 out_path=args.out,
                 min_rating=args.min_rating,
+                select=args.select,
             )
         except Exception as exc:
             logger.error("EP rating failed: %s", exc)

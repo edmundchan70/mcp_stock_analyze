@@ -18,6 +18,12 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **EP Rating** | 1–5 how well news matches a textbook EP. See rubric below. |
 | **EP Catalyst Match** | `ep_rating >= 4` — default names to chart manually. |
 | **Trade Opportunity Auto-Detect** | **v2 (deferred):** OHLCV pivot/base setup detection. Not in v1. |
+| **Daily Run** | One stamped execution of the configured agent chain. |
+| **Auto Run** | Wizard path: full Pipeline Type after gate + name (v1 = Daily EP scan). |
+| **Manual Run** | Wizard path: choose Gate, Catalyst yes/no, Analysis Method. |
+| **Pipeline Type** | Scan family for a Daily Run; v1 only `daily_ep_scan`. |
+| **Analysis Method** | Post-Catalyst scoring; v1 only EP Rating. |
+| **Run Artifact** | Stamped `{name}_agentN.json` under `output/<date>/<time>_<name>/`. |
 
 ### EP Rating rubric (v1)
 

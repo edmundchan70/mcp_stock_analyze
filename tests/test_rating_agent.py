@@ -181,8 +181,10 @@ def test_cli_rate_default_console_min_4_writes_full_json(tmp_path, monkeypatch, 
             )
         return sorted(rows, key=lambda r: (-r.ep_rating, -r.rvol10))
 
-    monkeypatch.setattr(cli_mod, "rate_ep_catalysts", fake_rate)
-    monkeypatch.setattr(cli_mod, "load_dotenv", lambda: None)
+    import stock_analyze.pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "rate_ep_catalysts", fake_rate)
+    monkeypatch.setattr(pipeline_mod, "load_dotenv", lambda: None)
 
     rc = cli_mod.main(["rate", "--in", str(in_path), "--out", str(out_path)])
     assert rc == 0
