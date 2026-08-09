@@ -54,6 +54,8 @@ class RunProgress:
         self.console = console or Console()
         self.progress = Progress(*_TICKER_COLUMNS, console=self.console, transient=True)
         self._task_id: Optional[int] = None
+        self._throttle: int = 0
+        self._ticker_call_count: int = 0
 
     def stage(self, text: str) -> None:
         """Persistent 'currently doing X' line."""
@@ -70,15 +72,28 @@ class RunProgress:
         self._stop_ticker()
         self.console.print(f"[bold red]✘ {text}[/bold red]")
 
-    def begin_ticker(self, total: int, description: str) -> None:
-        """Start the live ticker for a per-symbol stage."""
+    def begin_ticker(self, total: int, description: str, throttle: int = 0) -> None:
+        """Start the live ticker for a per-symbol stage.
+
+        Args:
+            total: Total number of items to process.
+            description: Label shown to the left of the progress bar.
+            throttle: When > 0, only update the widget every N calls to
+                :meth:`ticker`. Use to reduce terminal flicker on high-frequency
+                callbacks (e.g. batch OHLCV fetching ~3/sec).
+        """
         self._stop_ticker()
         self._task_id = self.progress.add_task(description, total=total)
+        self._throttle = throttle
+        self._ticker_call_count = 0
         self.progress.start()
 
     def ticker(self, index: int, total: int, symbol: str, action: str) -> None:
         """Update the live ticker with the symbol currently being worked on."""
         if self._task_id is None:
+            return
+        self._ticker_call_count += 1
+        if self._throttle > 0 and self._ticker_call_count % self._throttle != 0 and index < total:
             return
         self.progress.update(
             self._task_id,
@@ -95,6 +110,8 @@ class RunProgress:
             self.progress.stop()
             self.progress.remove_task(self._task_id)
             self._task_id = None
+        self._throttle = 0
+        self._ticker_call_count = 0
 
 
 def build_rating_table(

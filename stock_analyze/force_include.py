@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from openai import OpenAI
 
 from stock_analyze.data.symbols import SymbolKey
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_FORCE_INCLUDE_LLM_MODEL = "deepseek/deepseek-v4-flash-0731"
@@ -36,6 +40,35 @@ class ForceIncludeParseResult:
     errors: list[str] = field(default_factory=list)
 
 
+_FAST_TICKER_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
+
+
+def _try_fast_parse(text: str) -> Optional[ForceIncludeParseResult]:
+    """Regex pre-parser for clean comma/whitespace-separated ticker lists.
+
+    Returns a result if ALL tokens look like valid tickers; returns None if any
+    token is ambiguous (falls through to LLM).
+    """
+    t0 = time.perf_counter()
+    tokens = [t.strip() for t in re.split(r"[,;|\s]+", text) if t.strip()]
+    if not tokens:
+        return None
+
+    seen: set[str] = set()
+    symbols: list[SymbolKey] = []
+    for token in tokens:
+        if not _FAST_TICKER_RE.match(token):
+            return None  # ambiguous token → defer to LLM
+        upper = token.upper()
+        if upper not in seen:
+            seen.add(upper)
+            symbols.append((upper, "NASDAQ"))
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info("Fast regex parse: %d tickers in %.0fms", len(symbols), elapsed_ms)
+    return ForceIncludeParseResult(symbols=symbols)
+
+
 def parse_force_include_text(
     raw: str,
     *,
@@ -45,6 +78,13 @@ def parse_force_include_text(
     text = (raw or "").strip()
     if not text:
         return ForceIncludeParseResult()
+
+    # Fast path: try regex first for clean ticker lists (only when using
+    # the default OpenRouter parser, not a caller-supplied parse_fn).
+    if parse_fn is None:
+        fast = _try_fast_parse(text)
+        if fast is not None:
+            return fast
 
     fn = parse_fn or _make_openrouter_parser()
     try:
@@ -103,6 +143,8 @@ def _make_openrouter_parser() -> ParseFn:
     client = OpenAI(api_key=key, base_url=base_url)
 
     def parse(raw: str) -> dict[str, Any]:
+        logger.info("Parsing paste via LLM (%d chars)...", len(raw))
+        t0 = time.perf_counter()
         resp = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -110,10 +152,16 @@ def _make_openrouter_parser() -> ParseFn:
                 {"role": "user", "content": f"Paste:\n{raw}\n\nReturn JSON only."},
             ],
             temperature=0,
+            timeout=10,
             response_format={"type": "json_object"},
         )
+        elapsed_s = time.perf_counter() - t0
         content = resp.choices[0].message.content or ""
-        return _parse_llm_json(content)
+        data = _parse_llm_json(content)
+        n_syms = len(data.get("symbols") or [])
+        n_rej = len(data.get("rejected") or [])
+        logger.info("LLM parse complete — %.1fs (%d symbols, %d rejected)", elapsed_s, n_syms, n_rej)
+        return data
 
     return parse
 

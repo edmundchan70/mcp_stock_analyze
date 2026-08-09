@@ -12,6 +12,15 @@ from stock_analyze.models.rating import (
     EpRatingProposal,
     RatedBucket,
 )
+from stock_analyze.models.vcp import (
+    VcpContraction,
+    VcpContextEnrichment,
+    VcpEnrichedBucket,
+    VcpRatedBucket,
+    VcpRatedStock,
+    VcpScanBucket,
+    VcpStructuralRating,
+)
 
 __all__ = [
     "CatalystBucket",
@@ -27,4 +36,11 @@ __all__ = [
     "GateThresholds",
     "RatedBucket",
     "StockBucket",
+    "VcpContraction",
+    "VcpContextEnrichment",
+    "VcpEnrichedBucket",
+    "VcpRatedBucket",
+    "VcpRatedStock",
+    "VcpScanBucket",
+    "VcpStructuralRating",
 ]

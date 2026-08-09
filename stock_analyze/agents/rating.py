@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date
 from typing import Any, Callable, Optional, Sequence, Union, cast
 
@@ -239,6 +240,7 @@ def _make_openrouter_rater(
             f"News snippets:\n{json.dumps(snippets, ensure_ascii=False)}\n\n"
             "Return JSON only."
         )
+        t0 = time.perf_counter()
         resp = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -248,8 +250,11 @@ def _make_openrouter_rater(
             temperature=0,
             response_format={"type": "json_object"},
         )
+        elapsed_s = time.perf_counter() - t0
         content = resp.choices[0].message.content or ""
-        return _parse_llm_json(content, symbol=symbol)
+        result = _parse_llm_json(content, symbol=symbol)
+        logger.debug("LLM rating — %s: %.1fs", symbol, elapsed_s)
+        return result
 
     return rate
 

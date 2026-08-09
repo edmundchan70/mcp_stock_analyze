@@ -223,7 +223,10 @@ def _prompt_run_name() -> Optional[str]:
 def _run_auto() -> int:
     pipeline = _select(
         "Pipeline Type",
-        [Choice("Daily EP scan", value="daily_ep_scan")],
+        [
+            Choice("Daily EP scan", value="daily_ep_scan"),
+            Choice("Daily VCP scan", value="daily_vcp_scan"),
+        ],
         default="daily_ep_scan",
     )
     if pipeline is None:
@@ -234,35 +237,49 @@ def _run_auto() -> int:
         return 2
 
     pasted = bool(force_keys)
-    # Auto + paste: always Apply Gate filter (no "Run all")
     use_screener = not pasted
     apply_gates = True
 
-    select = _prompt_gate()
-    if select is None:
-        return 2
+    is_vcp = pipeline == "daily_vcp_scan"
+
+    if not is_vcp:
+        select = _prompt_gate()
+        if select is None:
+            return 2
 
     name = _prompt_run_name()
     if name is None:
         return 2
 
-    result = run_daily(
-        RunConfig(
-            name=name,
-            select=select,
-            run_catalyst=True,
-            analysis_method="ep_rating",
-            force_keys=force_keys or None,
-            use_screener=use_screener,
-            apply_gates=apply_gates,
-            pipeline_type=pipeline,
-            output_root=Path("output"),
-        )
+    cfg = RunConfig(
+        name=name,
+        select="strict" if is_vcp else select,  # type: ignore[arg-type]
+        run_catalyst=True,
+        analysis_method="ep_rating" if not is_vcp else None,
+        force_keys=force_keys or None,
+        use_screener=use_screener,
+        apply_gates=apply_gates,
+        pipeline_type=pipeline,
+        output_root=Path("output"),
     )
+    result = run_daily(cfg)
     return result.exit_code
 
 
 def _run_manual() -> int:
+    pipeline = _select(
+        "Pipeline Type",
+        [
+            Choice("Daily EP scan", value="daily_ep_scan"),
+            Choice("Daily VCP scan", value="daily_vcp_scan"),
+        ],
+        default="daily_ep_scan",
+    )
+    if pipeline is None:
+        return 2
+
+    is_vcp = pipeline == "daily_vcp_scan"
+
     force_keys, cancelled = _prompt_force_include()
     if cancelled:
         return 2
@@ -277,21 +294,42 @@ def _run_manual() -> int:
         if apply_gates_choice is None:
             return 2
         apply_gates = apply_gates_choice
-        if apply_gates:
+        if apply_gates and not is_vcp:
             select = _prompt_gate()
             if select is None:
                 return 2
         else:
-            # Run all pasted: no Gate select; both buckets hold all enriched names
             select = "both"
     else:
-        select = _prompt_gate()
-        if select is None:
-            return 2
+        if not is_vcp:
+            select = _prompt_gate()
+            if select is None:
+                return 2
+        else:
+            select = "strict"
 
-    run_catalyst, analysis_method, cancelled = _prompt_catalyst_and_method()
-    if cancelled:
-        return 2
+    run_catalyst: Optional[bool]
+    analysis_method: Optional[AnalysisMethod]
+    cancelled_run: bool
+
+    if is_vcp:
+        # VCP Manual: Apply Gate / Run all pasted already chosen above
+        enrichment = _select(
+            "Run VCP context enrichment (Agent 2-3)?",
+            [
+                Choice("Yes — Tavily dual-query + final rating", value="yes"),
+                Choice("No — Agent 1 only (structural scan)", value="no"),
+            ],
+            default="yes",
+        )
+        if enrichment is None:
+            return 2
+        run_catalyst = enrichment == "yes"
+        analysis_method = None
+    else:
+        run_catalyst, analysis_method, cancelled_run = _prompt_catalyst_and_method()
+        if cancelled_run:
+            return 2
 
     name = _prompt_run_name()
     if name is None:
@@ -306,7 +344,7 @@ def _run_manual() -> int:
             force_keys=force_keys or None,
             use_screener=use_screener,
             apply_gates=apply_gates,
-            pipeline_type="daily_ep_scan",
+            pipeline_type=pipeline,
             output_root=Path("output"),
         )
     )

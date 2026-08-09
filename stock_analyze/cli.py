@@ -1,4 +1,4 @@
-"""CLI: python -m stock_analyze [ep|catalyst|rate] ...  (no args → interactive wizard)."""
+"""CLI: python -m stock_analyze [ep|catalyst|rate|vcp|vcp-scan|vcp-enrich] ...  (no args → interactive wizard)."""
 
 from __future__ import annotations
 
@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from stock_analyze.agents.catalyst import load_stocks_from_input
+from stock_analyze.agents.enrichment import load_vcp_stocks_from_input
 from stock_analyze.pipeline import (
     execute_catalyst_enrich,
     execute_ep_rating,
     execute_ep_scan,
+    execute_vcp_enrichment,
+    execute_vcp_scan,
     format_rating_table,
+    format_vcp_rating_table,
     strip_internal_keys,
 )
 
@@ -63,6 +67,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum stars to print on console (default: 4). --out always has all ratings.",
     )
     rate.add_argument("-v", "--verbose", action="store_true")
+
+    # VCP pipeline subcommands
+    vcp = sub.add_parser("vcp", help="VCP full pipeline (scan + enrich + rate)")
+    vcp.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    vcp.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    vcp.add_argument("--no-gates", action="store_true", help="Skip Stage 2 + VCP gate filtering")
+    vcp.add_argument("-v", "--verbose", action="store_true")
+
+    vcp_scan = sub.add_parser("vcp-scan", help="VCP Agent 1 structural scan only")
+    vcp_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    vcp_scan.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    vcp_scan.add_argument("--no-gates", action="store_true", help="Skip gate filtering")
+    vcp_scan.add_argument("-v", "--verbose", action="store_true")
+
+    vcp_enrich = sub.add_parser("vcp-enrich", help="VCP Agent 2-3 context enrichment")
+    vcp_enrich.add_argument("--in", dest="in_path", required=True, help="Agent 1 VCP scan JSON")
+    vcp_enrich.add_argument("--out", type=str, default=None, help="Write final rated JSON to this path")
+    vcp_enrich.add_argument(
+        "--min-rating",
+        type=int,
+        default=4,
+        choices=(1, 2, 3, 4, 5),
+        help="Minimum stars to print (default: 4)",
+    )
+    vcp_enrich.add_argument("-v", "--verbose", action="store_true")
+
     return parser
 
 
@@ -129,6 +159,84 @@ def run_rate_command(
     return 0
 
 
+def run_vcp_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+) -> int:
+    """Run full VCP pipeline: scan + enrichment."""
+    raw = execute_vcp_scan(limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+
+    # Also run enrichment on passing stocks
+    ratings = payload.get("ratings") or []
+    passing = [r for r in ratings if r.get("structural_rating", 0) >= 4]
+    if passing:
+        print(f"\nRunning enrichment on {len(passing)} passing stocks...")
+        result = execute_vcp_enrichment(passing)
+        rated = result["rated_stocks"]
+        print(format_vcp_rating_table(rated, min_rating=3))
+
+    return 0
+
+
+def run_vcp_scan_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+) -> int:
+    """Run VCP Agent 1 structural scan only."""
+    raw = execute_vcp_scan(limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+    return 0
+
+
+def run_vcp_enrich_command(
+    *,
+    in_path: str,
+    out_path: Optional[str],
+    min_rating: int,
+) -> int:
+    """Run VCP Agent 2-3 context enrichment from Agent 1 JSON."""
+    payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
+    stocks = load_vcp_stocks_from_input(payload)
+    result = execute_vcp_enrichment(stocks)
+    rated = result["rated_stocks"]
+    text = json.dumps(result["agent3"], indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        matches = sum(1 for s in rated if s.final_rating >= 4)
+        print(f"Wrote {out_path} (count={len(rated)}, 4★+={matches})")
+
+    print(format_vcp_rating_table(rated, min_rating=min_rating))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -176,5 +284,39 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as exc:
             logger.error("EP rating failed: %s", exc)
             return 1
+
+    if args.command == "vcp":
+        try:
+            return run_vcp_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+            )
+        except Exception as exc:
+            logger.error("VCP pipeline failed: %s", exc)
+            return 1
+
+    if args.command == "vcp-scan":
+        try:
+            return run_vcp_scan_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+            )
+        except Exception as exc:
+            logger.error("VCP scan failed: %s", exc)
+            return 1
+
+    if args.command == "vcp-enrich":
+        try:
+            return run_vcp_enrich_command(
+                in_path=args.in_path,
+                out_path=args.out,
+                min_rating=args.min_rating,
+            )
+        except Exception as exc:
+            logger.error("VCP enrich failed: %s", exc)
+            return 1
+
     parser.error(f"Unknown command: {args.command}")
     return 2

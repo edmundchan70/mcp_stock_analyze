@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date
 from typing import Any, Callable, Optional, Sequence, Union
 
@@ -220,6 +221,7 @@ def _make_openrouter_summarizer(
             + json.dumps(snippets, ensure_ascii=False)
             + "\n\nReturn JSON only."
         )
+        t0 = time.perf_counter()
         resp = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -229,8 +231,11 @@ def _make_openrouter_summarizer(
             temperature=0,
             response_format={"type": "json_object"},
         )
+        elapsed_s = time.perf_counter() - t0
         content = resp.choices[0].message.content or ""
-        return _parse_llm_json(content, symbol=symbol)
+        result = _parse_llm_json(content, symbol=symbol)
+        logger.debug("LLM catalyst — %s: %.1fs", symbol, elapsed_s)
+        return result
 
     return summarize
 
