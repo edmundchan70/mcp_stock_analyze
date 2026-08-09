@@ -31,9 +31,11 @@ Interactive wizard (arrow keys + Enter). Chains Agent 1 → 2 → 3 and stamps *
 python -m stock_analyze
 ```
 
-**Auto Run:** Pipeline Type (**Daily EP scan**) → Gate (**Strict (recommended)** / Baseline / Both) → Force Include (Skip; paste coming soon) → run name → full chain.
+**Auto Run:** Pipeline Type (**Daily EP scan**) → Gate (**Strict (recommended)** / Baseline / Both) → Force Include (**Skip** / **Paste symbols…**) → run name → full chain.
 
-**Manual Run:** Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → Force Include stub → run name.
+**Manual Run:** Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → Force Include → run name.
+
+**Force Include paste:** free-text list (e.g. `( JHX, KGC, LUNR, MB, )`) → cheap OpenRouter LLM cleans to tickers → shows accepted + rejected/errors → confirm → merge into Universe. Needs `OPENROUTER_API_KEY` only when pasting (Skip does not).
 
 Outputs land under:
 
@@ -61,12 +63,11 @@ python -m stock_analyze ep --select strict --out ep_strict.json
 # Baseline only in the file
 python -m stock_analyze ep --select baseline --out ep_baseline.json
 
-# Force-include tickers from CSV, write Strict bucket
-python -m stock_analyze ep --csv force.csv --select strict --out ep_strict.json
-
 # Cap screener rows / verbose logs
 python -m stock_analyze ep --select strict --out ep_strict.json --limit 300 -v
 ```
+
+Force Include paste lives on the Daily Run wizard (not on legacy `ep`).
 
 ### CLI flags
 
@@ -74,19 +75,8 @@ python -m stock_analyze ep --select strict --out ep_strict.json --limit 300 -v
 |------|---------|---------|
 | `--out PATH` | stdout | Write JSON to file |
 | `--select` | `both` | Which top-level bucket(s) to include: `baseline`, `strict`, or `both` |
-| `--csv PATH` | none | Force-include CSV (`symbol,exchange`) |
 | `--limit N` | `300` | Max screener rows fetched |
 | `-v` | off | Debug logging |
-
-### Force-include CSV
-
-```csv
-symbol,exchange
-AAPL,NASDAQ
-TSLA,NASDAQ
-```
-
-Missing `exchange` defaults to `NASDAQ`. Symbols are merged with the screener universe and evaluated even if they did not appear in the screen.
 
 ## Gates
 

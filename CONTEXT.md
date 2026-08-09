@@ -33,8 +33,8 @@ Typical dollars traded per day over a multi-week lookback (~50 sessions), measur
 _Avoid_: average volume (shares only)
 
 **Force Include**:
-A symbol that must be evaluated even if it did not appear in the screener universe. v1 supplies these via CSV on the legacy `ep` command; interactive paste-to-parse is a deferred UI placeholder (not wired yet).
-_Avoid_: watchlist override, manual ticker, force symbols
+A symbol that must be evaluated even if it did not appear in the screener universe. Interactive Daily Run accepts a free-text paste; a cheap LLM cleans it into `(symbol, exchange)` keys (default exchange NASDAQ), surfaces rejected tokens/errors, then merges into the Universe. No CSV path.
+_Avoid_: watchlist override, manual ticker, force symbols, force CSV
 
 **Universe**:
 The set of symbols considered in one scan run (screener results merged with force includes).

@@ -42,7 +42,7 @@ class EpScanResult(BaseModel):
     """Dual-bucket Agent 1 output."""
 
     as_of: datetime
-    universe_source: Literal["screener", "csv", "hybrid"]
+    universe_source: Literal["screener", "force", "hybrid"]
     session: Literal["rth"] = "rth"
     gates: dict[str, GateThresholds]
     baseline: StockBucket = Field(default_factory=StockBucket)

@@ -15,12 +15,12 @@ from dotenv import load_dotenv
 from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
 from stock_analyze.agents.rating import rate_ep_catalysts
 from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
-from stock_analyze.data.symbols import row_symbol_key
+from stock_analyze.data.symbols import SymbolKey, row_symbol_key
 from stock_analyze.data.tradingview import enrich_from_ohlcv
 from stock_analyze.models.catalyst import CatalystBucket
 from stock_analyze.models.rating import EpRatedStock, RatedBucket
 from stock_analyze.scanners.ep.gates import BASELINE
-from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
+from stock_analyze.scanners.ep.runner import merge_force_rows, run_ep_scan
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class RunConfig:
     run_catalyst: bool = True
     analysis_method: Optional[AnalysisMethod] = "ep_rating"
     limit: int = 300
-    csv_path: Optional[str] = None
+    force_keys: Optional[list[SymbolKey]] = None
     output_root: Path = field(default_factory=lambda: Path("output"))
     min_rating: int = 4
     pipeline_type: str = "daily_ep_scan"
@@ -81,7 +81,7 @@ def _write_meta(run_dir: Path, meta: dict[str, Any]) -> None:
 
 def execute_ep_scan(
     *,
-    csv_path: Optional[str],
+    force_keys: Optional[Sequence[SymbolKey]] = None,
     select: GateSelect,
     limit: int,
 ) -> dict[str, Any]:
@@ -90,7 +90,7 @@ def execute_ep_scan(
     Always attaches ``_counts`` (baseline/strict) for CLI logging; callers that
     persist the payload should strip it via :func:`strip_internal_keys`.
     """
-    force_keys = load_force_csv(csv_path) if csv_path else []
+    keys: list[SymbolKey] = list(force_keys or [])
     screener_rows = fetch_us_ep_universe(
         min_price=BASELINE.min_price,
         min_gap_pct=BASELINE.min_gap_pct,
@@ -99,17 +99,17 @@ def execute_ep_scan(
     )
 
     force_rows: list = []
-    if force_keys:
-        force_rows = fetch_symbols(force_keys)
+    if keys:
+        force_rows = fetch_symbols(keys)
         found_keys = {row_symbol_key(r) for r in force_rows}
-        for sym, exch in force_keys:
+        for sym, exch in keys:
             if (sym, exch) not in found_keys:
                 try:
                     force_rows.append(enrich_from_ohlcv(sym, exch))
                 except Exception as exc:
                     logger.warning("Force-include enrich failed for %s:%s: %s", exch, sym, exc)
 
-    rows, force_set, source = merge_force_rows(screener_rows, force_keys, force_rows)
+    rows, force_set, source = merge_force_rows(screener_rows, keys, force_rows)
     result = run_ep_scan(
         rows=rows,
         as_of=date.today(),
@@ -157,13 +157,14 @@ def format_rating_table(stocks: list[EpRatedStock], *, min_rating: int = 4) -> s
 def run_daily(config: RunConfig) -> RunResult:
     try:
         name = sanitize_run_name(config.name)
+        force_keys = list(config.force_keys or [])
         stamped = RunConfig(
             name=name,
             select=config.select,
             run_catalyst=config.run_catalyst,
             analysis_method=config.analysis_method,
             limit=config.limit,
-            csv_path=config.csv_path,
+            force_keys=force_keys or None,
             output_root=config.output_root,
             min_rating=config.min_rating,
             pipeline_type=config.pipeline_type,
@@ -182,6 +183,7 @@ def run_daily(config: RunConfig) -> RunResult:
         "select": config.select,
         "run_catalyst": config.run_catalyst,
         "analysis_method": config.analysis_method,
+        "force_include_count": len(force_keys),
         "started_at": started,
         "status": "started",
         "steps_completed": steps,
@@ -190,7 +192,7 @@ def run_daily(config: RunConfig) -> RunResult:
 
     try:
         agent1_raw = execute_ep_scan(
-            csv_path=config.csv_path,
+            force_keys=force_keys or None,
             select=config.select,
             limit=config.limit,
         )

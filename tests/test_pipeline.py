@@ -162,6 +162,37 @@ def test_run_daily_full_chain_writes_all_agent_files(
     assert meta["steps_completed"] == ["agent1", "agent2", "agent3"]
 
 
+def test_run_daily_passes_force_keys_to_execute_ep_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixed = datetime(2026, 8, 9, 19, 0, 0)
+    monkeypatch.setattr("stock_analyze.pipeline._now", lambda: fixed)
+
+    seen: dict = {}
+
+    def fake_scan(**kwargs):
+        seen.update(kwargs)
+        return {"strict": {"count": 0, "stocks": []}}
+
+    monkeypatch.setattr("stock_analyze.pipeline.execute_ep_scan", fake_scan)
+
+    keys = [("JHX", "NYSE"), ("KGC", "NYSE")]
+    cfg = RunConfig(
+        name="force",
+        select="strict",
+        run_catalyst=False,
+        analysis_method=None,
+        force_keys=keys,
+        output_root=tmp_path,
+    )
+    result = run_daily(cfg)
+
+    assert result.exit_code == 0
+    assert seen.get("force_keys") == keys
+    meta = json.loads((result.run_dir / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["force_include_count"] == 2
+
+
 def test_run_daily_failure_keeps_agent1_and_marks_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

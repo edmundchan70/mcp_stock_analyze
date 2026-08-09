@@ -8,7 +8,10 @@ from typing import Optional
 
 import questionary
 from questionary import Choice, Style
+from dotenv import load_dotenv
 
+from stock_analyze.data.symbols import SymbolKey
+from stock_analyze.force_include import parse_force_include_text
 from stock_analyze.pipeline import AnalysisMethod, GateSelect, RunConfig, run_daily
 
 logger = logging.getLogger(__name__)
@@ -52,17 +55,103 @@ def _prompt_gate() -> Optional[GateSelect]:
     return value  # type: ignore[return-value]
 
 
-def _prompt_force_include() -> bool:
-    """Menu stub: paste Force Include deferred. Returns False (skip)."""
-    value = _select(
-        "Force Include (optional)",
-        [
-            Choice("Skip", value="skip"),
-            Choice("Paste symbols… (coming soon)", value="paste", disabled="coming soon"),
-        ],
-        default="skip",
-    )
-    return value == "paste"
+def _format_keys(keys: list[SymbolKey]) -> str:
+    return ", ".join(f"{exch}:{sym}" for sym, exch in keys)
+
+
+def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
+    """Return (force_keys, cancelled). Skip → ([], False); cancel → (None, True)."""
+    while True:
+        value = _select(
+            "Force Include (optional)",
+            [
+                Choice("Skip", value="skip"),
+                Choice("Paste symbols…", value="paste"),
+            ],
+            default="skip",
+        )
+        if value is None:
+            return None, True
+        if value == "skip":
+            return [], False
+
+        raw = _text(
+            "Paste tickers (e.g. ( JHX, KGC, LUNR, MB, ) — messy lists OK)",
+            default="",
+        )
+        if raw is None:
+            return None, True
+        if not raw.strip():
+            questionary.print("Empty paste — try again or choose Skip.", style="bold fg:yellow")
+            continue
+
+        load_dotenv()
+        result = parse_force_include_text(raw)
+
+        if result.errors:
+            questionary.print("Force Include parse errors:", style="bold fg:red")
+            for err in result.errors:
+                questionary.print(f"  • {err}", style="fg:red")
+            questionary.print(
+                "Fix the key / paste, or choose Skip.",
+                style="bold fg:yellow",
+            )
+            again = _select(
+                "What next?",
+                [
+                    Choice("Re-paste", value="repaste"),
+                    Choice("Skip Force Include", value="skip"),
+                ],
+                default="repaste",
+            )
+            if again is None:
+                return None, True
+            if again == "skip":
+                return [], False
+            continue
+
+        if result.symbols:
+            questionary.print(
+                f"Accepted ({len(result.symbols)}): {_format_keys(result.symbols)}",
+                style="bold fg:green",
+            )
+        else:
+            questionary.print("Accepted: (none)", style="bold fg:yellow")
+
+        if result.rejected:
+            questionary.print(
+                f"Rejected / not parsed ({len(result.rejected)}): "
+                + ", ".join(result.rejected),
+                style="bold fg:yellow",
+            )
+
+        if not result.symbols:
+            next_step = _select(
+                "Nothing usable parsed. What next?",
+                [
+                    Choice("Re-paste", value="repaste"),
+                    Choice("Skip Force Include", value="skip"),
+                ],
+                default="repaste",
+            )
+            if next_step is None:
+                return None, True
+            if next_step == "skip":
+                return [], False
+            continue
+
+        confirm = _select(
+            "Use this Force Include list?",
+            [
+                Choice("Yes — continue", value="yes"),
+                Choice("No — re-paste", value="no"),
+            ],
+            default="yes",
+        )
+        if confirm is None:
+            return None, True
+        if confirm == "yes":
+            return result.symbols, False
 
 
 def _prompt_run_name() -> Optional[str]:
@@ -82,7 +171,9 @@ def _run_auto() -> int:
     if select is None:
         return 2
 
-    _prompt_force_include()
+    force_keys, cancelled = _prompt_force_include()
+    if cancelled:
+        return 2
 
     name = _prompt_run_name()
     if name is None:
@@ -94,6 +185,7 @@ def _run_auto() -> int:
             select=select,
             run_catalyst=True,
             analysis_method="ep_rating",
+            force_keys=force_keys or None,
             pipeline_type=pipeline,
             output_root=Path("output"),
         )
@@ -135,7 +227,9 @@ def _run_manual() -> int:
             style="bold fg:yellow",
         )
 
-    _prompt_force_include()
+    force_keys, cancelled = _prompt_force_include()
+    if cancelled:
+        return 2
 
     name = _prompt_run_name()
     if name is None:
@@ -147,6 +241,7 @@ def _run_manual() -> int:
             select=select,
             run_catalyst=run_catalyst,
             analysis_method=analysis_method,
+            force_keys=force_keys or None,
             pipeline_type="daily_ep_scan",
             output_root=Path("output"),
         )

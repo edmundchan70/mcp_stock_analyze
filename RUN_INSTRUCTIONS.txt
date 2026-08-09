@@ -1,10 +1,11 @@
 EP SCANNER (Agent 1) - RUN INSTRUCTIONS
 =======================================
 1. Activate venv and: pip install -r requirements.txt
-2. From this directory, run a post-open US scan:
+2. Preferred daily path (wizard; Force Include paste optional):
+     python -m stock_analyze
+     # or .\run.ps1 / ./run.sh
+3. Legacy Agent 1 only:
      python -m stock_analyze ep --out ep_scan.json
-3. Optional force-includes CSV (header: symbol,exchange):
-     python -m stock_analyze ep --csv force.csv --out ep_scan.json
 4. Select one bucket for downstream agents:
      python -m stock_analyze ep --select strict --out ep_strict.json
 5. Output JSON has top-level "baseline" and/or "strict" stock lists (no OHLC).

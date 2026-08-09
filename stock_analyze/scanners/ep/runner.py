@@ -11,6 +11,7 @@ from stock_analyze.scanners.ep.gates import BASELINE, STRICT, passes_baseline, p
 from stock_analyze.scanners.ep.metrics import normalize_row
 
 ForceKey = SymbolKey
+UniverseSource = Literal["screener", "force", "hybrid"]
 
 
 def run_ep_scan(
@@ -18,7 +19,7 @@ def run_ep_scan(
     *,
     as_of: Optional[date] = None,
     force_symbols: Optional[Set[ForceKey]] = None,
-    universe_source: Literal["screener", "csv", "hybrid"] = "screener",
+    universe_source: UniverseSource = "screener",
 ) -> EpScanResult:
     """Filter normalized rows into baseline and strict buckets."""
     day = as_of or datetime.now(timezone.utc).date()
@@ -49,35 +50,11 @@ def run_ep_scan(
     )
 
 
-def load_force_csv(path: str) -> list[ForceKey]:
-    """Load force-include CSV with columns symbol,exchange (header required)."""
-    import csv
-    from pathlib import Path
-
-    text = Path(path).read_text(encoding="utf-8")
-    reader = csv.DictReader(text.splitlines())
-    if not reader.fieldnames:
-        raise ValueError("Force-include CSV must have a header row")
-    fields = {f.strip().lower(): f for f in reader.fieldnames}
-    if "symbol" not in fields:
-        raise ValueError("Force-include CSV must include a 'symbol' column")
-    sym_key = fields["symbol"]
-    exch_key = fields.get("exchange")
-    out: list[ForceKey] = []
-    for row in reader:
-        symbol = (row.get(sym_key) or "").strip().upper()
-        if not symbol:
-            continue
-        exchange = (row.get(exch_key) or "NASDAQ").strip().upper() if exch_key else "NASDAQ"
-        out.append((symbol, exchange))
-    return out
-
-
 def merge_force_rows(
     screener_rows: Iterable[Mapping[str, Any]],
     force_keys: Sequence[ForceKey],
     force_rows: Sequence[Mapping[str, Any]],
-) -> tuple[list[dict[str, Any]], Set[ForceKey], Literal["screener", "csv", "hybrid"]]:
+) -> tuple[list[dict[str, Any]], Set[ForceKey], UniverseSource]:
     """Merge screener + force-include rows; prefer screener row when duplicate."""
     by_key: dict[ForceKey, dict[str, Any]] = {}
     screener_count = 0
@@ -92,9 +69,9 @@ def merge_force_rows(
 
     force_set = {(s.upper(), e.upper()) for s, e in force_keys}
     if screener_count and force_set:
-        source: Literal["screener", "csv", "hybrid"] = "hybrid"
+        source: UniverseSource = "hybrid"
     elif force_set:
-        source = "csv"
+        source = "force"
     else:
         source = "screener"
 

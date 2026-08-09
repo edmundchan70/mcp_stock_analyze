@@ -11,7 +11,7 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **RVOL10** | `volume / 10-day average volume`. |
 | **Event Day Dollar Volume** | Dollars traded on the gap day. |
 | **Average Daily Dollar Volume** | Typical daily dollars traded over ~50 days (pre-gap liquidity). Screener uses TradingView `AvgValue.Traded_60d` as the nearest bulk field. |
-| **Force Include** | CSV-supplied symbol always evaluated alongside the screener universe. |
+| **Force Include** | Pasted symbol (LLM-cleaned) always evaluated alongside the screener universe. |
 | **Universe** | Screener symbols merged with force includes for one scan. |
 | **Catalyst** | News-backed fundamental driver behind the gap; absence recorded as `catalyst_found=false`. |
 | **Catalyst Type** | `EARNINGS \| GUIDANCE \| CONTRACT \| FDA \| PR \| UNKNOWN` (`PR` = residual material company news). |

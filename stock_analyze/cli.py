@@ -25,7 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=False)
 
     ep = sub.add_parser("ep", help="Episodic Pivot Agent 1 technical filter")
-    ep.add_argument("--csv", type=str, default=None, help="Force-include CSV (symbol,exchange)")
     ep.add_argument("--out", type=str, default=None, help="Write JSON to this path")
     ep.add_argument(
         "--select",
@@ -69,12 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_ep_command(
     *,
-    csv_path: Optional[str],
     out_path: Optional[str],
     select: Literal["baseline", "strict", "both"],
     limit: int,
 ) -> int:
-    raw = execute_ep_scan(csv_path=csv_path, select=select, limit=limit)
+    raw = execute_ep_scan(select=select, limit=limit)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -147,7 +145,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "ep":
         try:
             return run_ep_command(
-                csv_path=args.csv,
                 out_path=args.out,
                 select=args.select,
                 limit=args.limit,
