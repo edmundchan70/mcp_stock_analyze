@@ -155,19 +155,25 @@ def format_rating_table(stocks: list[EpRatedStock], *, min_rating: int = 4) -> s
 
 
 def run_daily(config: RunConfig) -> RunResult:
-    name = sanitize_run_name(config.name)
-    stamped = RunConfig(
-        name=name,
-        select=config.select,
-        run_catalyst=config.run_catalyst,
-        analysis_method=config.analysis_method,
-        limit=config.limit,
-        csv_path=config.csv_path,
-        output_root=config.output_root,
-        min_rating=config.min_rating,
-        pipeline_type=config.pipeline_type,
-    )
-    run_dir = create_run_dir(stamped)
+    try:
+        name = sanitize_run_name(config.name)
+        stamped = RunConfig(
+            name=name,
+            select=config.select,
+            run_catalyst=config.run_catalyst,
+            analysis_method=config.analysis_method,
+            limit=config.limit,
+            csv_path=config.csv_path,
+            output_root=config.output_root,
+            min_rating=config.min_rating,
+            pipeline_type=config.pipeline_type,
+        )
+        run_dir = create_run_dir(stamped)
+    except Exception as exc:
+        logger.error("Daily Run setup failed: %s", exc)
+        print(f"Daily Run setup failed: {exc}")
+        return RunResult(exit_code=1, run_dir=Path(config.output_root), error=str(exc))
+
     steps: list[str] = []
     started = datetime.now(timezone.utc).isoformat()
     meta: dict[str, Any] = {

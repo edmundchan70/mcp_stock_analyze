@@ -121,6 +121,14 @@ def test_load_stocks_from_input_bare_list():
     assert stocks[0]["symbol"] == "NVDA"
 
 
+def test_load_stocks_from_input_both_empty_buckets_returns_empty_list():
+    payload = {
+        "baseline": {"count": 0, "stocks": []},
+        "strict": {"count": 0, "stocks": []},
+    }
+    assert load_stocks_from_input(payload, select="both") == []
+
+
 def test_cli_catalyst_selects_strict_and_writes_envelope(tmp_path, monkeypatch):
     from stock_analyze.models.catalyst import CatalystEnrichedStock
     from stock_analyze import cli as cli_mod

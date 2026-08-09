@@ -52,13 +52,13 @@ def _prompt_gate() -> Optional[GateSelect]:
     return value  # type: ignore[return-value]
 
 
-def _prompt_force_symbols() -> bool:
-    """Menu stub: Paste symbols deferred. Returns False (skip)."""
+def _prompt_force_include() -> bool:
+    """Menu stub: paste Force Include deferred. Returns False (skip)."""
     value = _select(
-        "Force symbols (optional)",
+        "Force Include (optional)",
         [
             Choice("Skip", value="skip"),
-            Choice("Paste symbols… (coming soon)", value="paste", disabled=True),
+            Choice("Paste symbols… (coming soon)", value="paste", disabled="coming soon"),
         ],
         default="skip",
     )
@@ -82,7 +82,7 @@ def _run_auto() -> int:
     if select is None:
         return 2
 
-    _prompt_force_symbols()
+    _prompt_force_include()
 
     name = _prompt_run_name()
     if name is None:
@@ -135,7 +135,7 @@ def _run_manual() -> int:
             style="bold fg:yellow",
         )
 
-    _prompt_force_symbols()
+    _prompt_force_include()
 
     name = _prompt_run_name()
     if name is None:

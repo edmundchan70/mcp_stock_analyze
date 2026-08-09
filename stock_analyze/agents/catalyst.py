@@ -56,7 +56,7 @@ def load_stocks_from_input(
             raise ValueError(f"Missing '{select}.stocks' in Agent 1 payload")
         return list(stocks)
 
-    if select == "both":
+    if select == "both" and ("baseline" in payload or "strict" in payload):
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         for key in ("strict", "baseline"):
@@ -66,8 +66,7 @@ def load_stocks_from_input(
                 if sym and sym not in seen:
                     seen.add(sym)
                     out.append(s)
-        if out:
-            return out
+        return out
 
     raise ValueError(
         "Could not find stocks in input. Expected Agent 1 buckets "

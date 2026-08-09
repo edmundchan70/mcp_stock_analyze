@@ -31,9 +31,9 @@ Interactive wizard (arrow keys + Enter). Chains Agent 1 → 2 → 3 and stamps *
 python -m stock_analyze
 ```
 
-**Auto Run:** Pipeline Type (**Daily EP scan**) → Gate (**Strict (recommended)** / Baseline / Both) → Force symbols (Skip; paste coming soon) → run name → full chain.
+**Auto Run:** Pipeline Type (**Daily EP scan**) → Gate (**Strict (recommended)** / Baseline / Both) → Force Include (Skip; paste coming soon) → run name → full chain.
 
-**Manual Run:** Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → Force symbols stub → run name.
+**Manual Run:** Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → Force Include stub → run name.
 
 Outputs land under:
 
@@ -242,4 +242,4 @@ python -m pytest tests/ -v
 
 ## Schedule
 
-Not wired yet. When you add Task Scheduler / cron, call the same pipeline core (`stock_analyze.pipeline.run_daily`) with a non-interactive `RunConfig` after the US cash close; keep the wizard for desk use.
+Not wired yet. When you add Task Scheduler / cron after the US cash close, prefer a future non-interactive entry such as `python -m stock_analyze run --auto --select strict --name daily` (not implemented), which should call the same pipeline core (`stock_analyze.pipeline.run_daily`). Keep the wizard for desk use.
