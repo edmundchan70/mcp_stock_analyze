@@ -147,6 +147,31 @@ def test_rate_sorts_best_to_worst():
     assert out[2].ep_catalyst_match is False
 
 
+def test_rate_on_ticker_reports_symbol_and_action():
+    events: list[tuple] = []
+
+    out = rate_ep_catalysts(
+        [_stock(symbol="NVDA"), _stock(symbol="AMD")],
+        search_news=lambda s: [{"title": "t", "content": "c"}],
+        rate_catalyst=lambda s, stock, snips: {
+            "ticker": s,
+            "ep_rating": 2,
+            "ep_rationale": "no",
+        },
+        on_ticker=lambda index, total, symbol, action: events.append(
+            (index, total, symbol, action)
+        ),
+    )
+
+    assert len(out) == 2
+    assert events == [
+        (1, 2, "NVDA", "searching news"),
+        (1, 2, "NVDA", "rating"),
+        (2, 2, "AMD", "searching news"),
+        (2, 2, "AMD", "rating"),
+    ]
+
+
 def test_rating_labels_map():
     assert RATING_LABELS[5] == "textbook"
     assert RATING_LABELS[1] == "bs"

@@ -26,6 +26,7 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **Pipeline Type** | Scan family for a Daily Run; v1 only `daily_ep_scan`. |
 | **Analysis Method** | Post-Catalyst scoring; v1 only EP Rating. |
 | **Run Artifact** | Stamped `{name}_agentN.json` under `output/<date>/<time>_<name>/`. |
+| **Run Progress** | Live terminal timeline of a Daily Run: persistent stage lines (Agent 1 / Catalyst / EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only, not persisted to Run Artifacts. |
 
 ### EP Rating rubric (v1)
 

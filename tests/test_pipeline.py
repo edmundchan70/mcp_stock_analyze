@@ -108,7 +108,7 @@ def test_run_daily_full_chain_writes_all_agent_files(
             }
         },
     )
-    def fake_catalyst(stocks):
+    def fake_catalyst(stocks, on_ticker=None):
         enriched = [
             {
                 **stocks[0],
@@ -123,7 +123,7 @@ def test_run_daily_full_chain_writes_all_agent_files(
         ]
         return {"count": 1, "stocks": enriched}
 
-    def fake_rate(stocks):
+    def fake_rate(stocks, on_ticker=None):
         from stock_analyze.models.rating import EpRatedStock
 
         rated = [
@@ -350,7 +350,7 @@ def test_run_daily_failure_keeps_agent1_and_marks_failed(
         lambda **kwargs: {"strict": {"count": 0, "stocks": []}},
     )
 
-    def fail_catalyst(stocks):
+    def fail_catalyst(stocks, on_ticker=None):
         raise RuntimeError("tavily down")
 
     monkeypatch.setattr("stock_analyze.pipeline.execute_catalyst_enrich", fail_catalyst)

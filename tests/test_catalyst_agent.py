@@ -105,6 +105,32 @@ def test_enrich_llm_error_retries_then_soft_fails():
     assert "bad json" in out[0].catalyst_summary
 
 
+def test_enrich_on_ticker_reports_symbol_and_action():
+    events: list[tuple] = []
+
+    out = enrich_with_catalysts(
+        [_stock(symbol="NVDA"), _stock(symbol="AMD")],
+        search_news=lambda s: [{"title": "t", "content": "c"}],
+        summarize_catalyst=lambda s, snips: {
+            "ticker": s,
+            "catalyst_found": False,
+            "catalyst_type": "UNKNOWN",
+            "summary": "none",
+        },
+        on_ticker=lambda index, total, symbol, action: events.append(
+            (index, total, symbol, action)
+        ),
+    )
+
+    assert len(out) == 2
+    assert events == [
+        (1, 2, "NVDA", "searching news"),
+        (1, 2, "NVDA", "compressing"),
+        (2, 2, "AMD", "searching news"),
+        (2, 2, "AMD", "compressing"),
+    ]
+
+
 def test_load_stocks_from_input_defaults_to_strict_bucket():
     payload = {
         "baseline": {"count": 1, "stocks": [_stock(symbol="WEAK", gap_pct=5.0)]},

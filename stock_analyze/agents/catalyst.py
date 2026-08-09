@@ -32,6 +32,7 @@ SYSTEM_PROMPT = (
 
 SearchNewsFn = Callable[[str], list[dict[str, str]]]
 SummarizeFn = Callable[[str, list[dict[str, str]]], dict[str, Any]]
+TickerFn = Callable[[int, int, str, str], None]
 
 
 def load_stocks_from_input(
@@ -82,8 +83,14 @@ def enrich_with_catalysts(
     model: Optional[str] = None,
     search_news: Optional[SearchNewsFn] = None,
     summarize_catalyst: Optional[SummarizeFn] = None,
+    on_ticker: Optional[TickerFn] = None,
 ) -> list[CatalystEnrichedStock]:
-    """Enrich Agent 1 stocks with catalyst fields. Soft-fails per symbol."""
+    """Enrich Agent 1 stocks with catalyst fields. Soft-fails per symbol.
+
+    When ``on_ticker`` is given, it is called as
+    ``on_ticker(index, total, symbol, action)`` before each network call so a
+    Run Progress reporter can show which symbol is being worked on.
+    """
     if search_news is None or summarize_catalyst is None:
         load_dotenv()
 
@@ -93,15 +100,20 @@ def enrich_with_catalysts(
     )
 
     enriched: list[CatalystEnrichedStock] = []
-    for raw in stocks:
+    total = len(stocks)
+    for index, raw in enumerate(stocks, start=1):
         base = _as_stock_dict(raw)
         symbol = str(base.get("symbol") or "").upper()
         try:
+            if on_ticker is not None:
+                on_ticker(index, total, symbol, "searching news")
             snippets = _with_retry(lambda: search(symbol), label="Tavily")
 
             def _summarize_and_validate() -> CatalystSummary:
                 return CatalystSummary.model_validate(summarize(symbol, snippets))
 
+            if on_ticker is not None:
+                on_ticker(index, total, symbol, "compressing")
             parsed = _with_retry(_summarize_and_validate, label="LLM")
             enriched.append(_merge(base, parsed))
         except Exception as exc:

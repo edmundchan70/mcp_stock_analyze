@@ -91,3 +91,7 @@ _Avoid_: agent 3 (as a type name), scorer type
 **Run Artifact**:
 A JSON file written for one agent step of a Daily Run under `output/<date>/<time>_<name>/`, named `{name}_agentN.json`.
 _Avoid_: scan dump, output blob
+
+**Run Progress**:
+The live terminal timeline of a Daily Run — persistent stage lines (Agent 1, Catalyst, EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only; not persisted to Run Artifacts.
+_Avoid_: logging, debug output

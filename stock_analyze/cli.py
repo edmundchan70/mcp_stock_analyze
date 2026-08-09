@@ -136,6 +136,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(levelname)s %(message)s",
     )
+    for _name in ("httpx", "httpcore", "openai", "urllib3", "tavily"):
+        if not getattr(args, "verbose", False):
+            logging.getLogger(_name).setLevel(logging.WARNING)
 
     if not args.command:
         from stock_analyze.interactive import run_interactive
