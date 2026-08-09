@@ -38,7 +38,7 @@ _Avoid_: watchlist override, manual ticker, force symbols, force CSV
 
 **Universe**:
 The set of symbols considered in one scan run (screener results merged with force includes).
-_Avoid_: watchlist, ticker list (unless meaning the CSV input file)
+_Avoid_: watchlist, ticker list (unless meaning a pasted Force Include list)
 
 **Catalyst**:
 A clear, news-backed fundamental driver behind the gap (earnings surprise, guidance, contract, FDA, or material PR). Absence is still recorded (`catalyst_found=false`).

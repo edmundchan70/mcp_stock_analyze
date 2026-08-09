@@ -90,7 +90,7 @@ def execute_ep_scan(
     Always attaches ``_counts`` (baseline/strict) for CLI logging; callers that
     persist the payload should strip it via :func:`strip_internal_keys`.
     """
-    keys: list[SymbolKey] = list(force_keys or [])
+    force_key_list: list[SymbolKey] = list(force_keys or [])
     screener_rows = fetch_us_ep_universe(
         min_price=BASELINE.min_price,
         min_gap_pct=BASELINE.min_gap_pct,
@@ -99,21 +99,21 @@ def execute_ep_scan(
     )
 
     force_rows: list = []
-    if keys:
-        force_rows = fetch_symbols(keys)
+    if force_key_list:
+        force_rows = fetch_symbols(force_key_list)
         found_keys = {row_symbol_key(r) for r in force_rows}
-        for sym, exch in keys:
+        for sym, exch in force_key_list:
             if (sym, exch) not in found_keys:
                 try:
                     force_rows.append(enrich_from_ohlcv(sym, exch))
                 except Exception as exc:
                     logger.warning("Force-include enrich failed for %s:%s: %s", exch, sym, exc)
 
-    rows, force_set, source = merge_force_rows(screener_rows, keys, force_rows)
+    rows, force_set, source = merge_force_rows(screener_rows, force_key_list, force_rows)
     result = run_ep_scan(
         rows=rows,
         as_of=date.today(),
-        force_symbols=force_set,
+        force_keys=force_set,
         universe_source=source,
     )
     payload = result.model_dump_selected(select)

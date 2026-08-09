@@ -59,22 +59,34 @@ def _format_keys(keys: list[SymbolKey]) -> str:
     return ", ".join(f"{exch}:{sym}" for sym, exch in keys)
 
 
+def _ask_repaste_or_skip(message: str) -> Optional[str]:
+    """Return 'repaste', 'skip', or None (cancelled)."""
+    return _select(
+        message,
+        [
+            Choice("Re-paste", value="repaste"),
+            Choice("Skip Force Include", value="skip"),
+        ],
+        default="repaste",
+    )
+
+
 def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
     """Return (force_keys, cancelled). Skip → ([], False); cancel → (None, True)."""
-    while True:
-        value = _select(
-            "Force Include (optional)",
-            [
-                Choice("Skip", value="skip"),
-                Choice("Paste symbols…", value="paste"),
-            ],
-            default="skip",
-        )
-        if value is None:
-            return None, True
-        if value == "skip":
-            return [], False
+    value = _select(
+        "Force Include (optional)",
+        [
+            Choice("Skip", value="skip"),
+            Choice("Paste symbols…", value="paste"),
+        ],
+        default="skip",
+    )
+    if value is None:
+        return None, True
+    if value == "skip":
+        return [], False
 
+    while True:
         raw = _text(
             "Paste tickers (e.g. ( JHX, KGC, LUNR, MB, ) — messy lists OK)",
             default="",
@@ -83,6 +95,11 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
             return None, True
         if not raw.strip():
             questionary.print("Empty paste — try again or choose Skip.", style="bold fg:yellow")
+            again = _ask_repaste_or_skip("What next?")
+            if again is None:
+                return None, True
+            if again == "skip":
+                return [], False
             continue
 
         load_dotenv()
@@ -96,14 +113,7 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
                 "Fix the key / paste, or choose Skip.",
                 style="bold fg:yellow",
             )
-            again = _select(
-                "What next?",
-                [
-                    Choice("Re-paste", value="repaste"),
-                    Choice("Skip Force Include", value="skip"),
-                ],
-                default="repaste",
-            )
+            again = _ask_repaste_or_skip("What next?")
             if again is None:
                 return None, True
             if again == "skip":
@@ -126,17 +136,10 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
             )
 
         if not result.symbols:
-            next_step = _select(
-                "Nothing usable parsed. What next?",
-                [
-                    Choice("Re-paste", value="repaste"),
-                    Choice("Skip Force Include", value="skip"),
-                ],
-                default="repaste",
-            )
-            if next_step is None:
+            again = _ask_repaste_or_skip("Nothing usable parsed. What next?")
+            if again is None:
                 return None, True
-            if next_step == "skip":
+            if again == "skip":
                 return [], False
             continue
 
@@ -152,6 +155,7 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
             return None, True
         if confirm == "yes":
             return result.symbols, False
+        # No → stay in paste loop (re-prompt text)
 
 
 def _prompt_run_name() -> Optional[str]:

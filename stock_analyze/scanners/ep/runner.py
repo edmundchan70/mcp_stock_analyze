@@ -18,12 +18,12 @@ def run_ep_scan(
     rows: Sequence[Mapping[str, Any]],
     *,
     as_of: Optional[date] = None,
-    force_symbols: Optional[Set[ForceKey]] = None,
+    force_keys: Optional[Set[ForceKey]] = None,
     universe_source: UniverseSource = "screener",
 ) -> EpScanResult:
     """Filter normalized rows into baseline and strict buckets."""
     day = as_of or datetime.now(timezone.utc).date()
-    force = force_symbols or set()
+    force = force_keys or set()
     force_upper = {(s.upper(), e.upper()) for s, e in force}
 
     stocks: list[EpStock] = []

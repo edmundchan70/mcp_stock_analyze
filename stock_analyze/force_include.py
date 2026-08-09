@@ -99,11 +99,7 @@ def _make_openrouter_parser() -> ParseFn:
         )
 
     base_url = os.getenv("OPENROUTER_BASE_URL") or DEFAULT_OPENROUTER_BASE_URL
-    model_id = (
-        os.getenv("FORCE_INCLUDE_LLM_MODEL")
-        or os.getenv("CATALYST_LLM_MODEL")
-        or DEFAULT_FORCE_INCLUDE_LLM_MODEL
-    )
+    model_id = os.getenv("FORCE_INCLUDE_LLM_MODEL") or DEFAULT_FORCE_INCLUDE_LLM_MODEL
     client = OpenAI(api_key=key, base_url=base_url)
 
     def parse(raw: str) -> dict[str, Any]:

@@ -69,7 +69,7 @@ def test_force_included_symbol_flagged():
     result = run_ep_scan(
         rows=rows,
         as_of=date(2026, 8, 8),
-        force_symbols={("FORCE", "NYSE")},
+        force_keys={("FORCE", "NYSE")},
         universe_source="hybrid",
     )
     assert result.strict.stocks[0].force_included is True
