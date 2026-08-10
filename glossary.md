@@ -34,9 +34,9 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **Tavily Dual-Query** | VCP-specific: two parallel Tavily calls per stock — Query 1 (sector/industry taxonomy, basic depth) + Query 2 (market leadership/growth catalysts, advanced depth). Executed concurrently per stock with bounded asyncio semaphore. |
 | **Batch OHLCV** | `batch_get_stock_data()`: persistent WebSocket, fetches 300 daily bars per stock for up to 250 stocks sequentially with 300ms inter-fetch delay and proactive socket refresh every 50 stocks. ~7.5 min/run. Used by VCP Agent 1; EP uses single-fetch `get_stock_data()`. |
 | **Daily Run** | One stamped execution of the configured agent chain. |
-| **Auto Run** | Wizard: Pipeline (EP/VCP) → Force Include → Gate → name. Paste skips screener and always applies Gate. For EP: screener + Baseline/Strict gates. For VCP: screener (Stage 2 pre-filter) + Stage 2 + VCP structural gates. |
-| **Manual Run** | Wizard: Force Include first; paste offers Apply Gate vs Run all, then Catalyst / Analysis / name. For EP: Baseline/Strict gates. For VCP: Stage 2 + VCP structural gates (Apply) or no gates (Run all pasted). |
-| **Pipeline Type** | Scan family for a Daily Run: `daily_ep_scan` (EP pipeline) or `daily_vcp_scan` (VCP pipeline). User selects via CLI subcommand or wizard first question. |
+| **Auto Run** | Wizard: Pipeline (EP/VCP/BO) → Force Include → Gate → name. Paste skips screener and always applies Gate. For EP: screener + Baseline/Strict gates. For VCP/BO: screener (Stage 2 pre-filter) + structural gates. |
+| **Manual Run** | Wizard: Force Include first; paste offers Apply Gate vs Run all, then Catalyst / Analysis / name. For EP: Baseline/Strict gates. For VCP/BO: structural gates (Apply) or no gates (Run all pasted). |
+| **Pipeline Type** | Scan family for a Daily Run: `daily_ep_scan` (EP pipeline), `daily_vcp_scan` (VCP pipeline), or `daily_bo_scan` (BO pipeline). User selects via CLI subcommand or wizard first question. |
 | **Analysis Method** | Post-Catalyst scoring; v1 only EP Rating. |
 | **Run Artifact** | Stamped `{name}_agentN.json` under `output/<date>/<time>_<name>/`. |
 | **RunConfig** | `RunConfig` dataclass (`pipeline.py:49`): all pipeline parameters — name, select, run_catalyst, analysis_method, limit, force_keys, use_screener, apply_gates, min_rating, pipeline_type, output_root. |
@@ -149,6 +149,67 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 | 5★ | `is_category_leader=false` OR `industry_group_strength_flag=DECLINING_GROUP` | 4★ (cap) |
 | 4★ | `industry_group_strength_flag=DECLINING_GROUP` | 3★ (cap — soft setup in weak sector) |
 | 4★ | `HOT_SECTOR` or `NEUTRAL` | 4★ (no cap) |
+| 3★ | Any | 3★ (already disqualified) |
+
+---
+
+## BO (Qullamaggie Breakout)
+
+| Term | Meaning |
+|---|---|
+| **BO** | Qullamaggie Breakout setup — a stock with extreme prior momentum (prior impulse ≥ 30% over 20–63 days), consolidating in a tightening base (10–40 days), then breaking out above resistance (KDE pivot) with a volume surge (≥ 1.5× baseline) while hugging its EMA10. Structural + contextual. |
+| **Prior Impulse** | Max % gain over a rolling 20–63 day window. Required ≥ 30%. `prior_impulse(closes)` (`metrics.py:43`). |
+| **ADR20** | 20-day Average Daily Range % = mean((high−low)/close) over last 20 bars. Must satisfy 4% ≤ ADR ≤ 12% envelope — below = sluggish, above = excessive spread/gap risk. `avg_daily_range_pct()` (`metrics.py:70`), `passes_adr_envelope()` (`gates.py:13`). |
+| **Base** | The consolidation after the impulse peak, measured 10–40 trading days, with VCI ≤ 0.65, a narrow pre-breakout 3-day range, a KDE pivot in the upper quartile, and S_HL ≥ 1 higher lows. `detect_bases()` (`metrics.py:338`). |
+| **VCI** | Volatility Contraction Index = ATR_short(5) / ATR_medium(20), measured through the base end. Must be ≤ 0.65. `vci_atr()` (`metrics.py:94`). |
+| **KDE Pivot** | Gaussian KDE (bandwidth = 3% of current price) over local peak highs (2-day radius) of the base window; pivot = global KDE mode located in the upper quartile of the base's high-low range. `kde_pivot()` (`metrics.py:157`). |
+| **Higher Lows (S_HL)** | Count of consecutive strictly higher swing lows (2-day radius) leading into the pivot. Required S_HL ≥ 1. `higher_lows()` (`metrics.py:210`). |
+| **Volume Signature** | Dual condition (UT-06): base-end volume must dry up to ≤ ~0.5× pre-base baseline **and** the breakout bar must surge ≥ 1.5× baseline. Both enforced as the volume essential in `score_bo_setup()`. `volume_signature()` (`metrics.py:255`). |
+| **Surfing Distance** | Close distance from EMA10 (%). Must be within ±8% — >8% above EMA10 = overextended → clamp to 3★. `ma_stack()` (`metrics.py:116`). |
+| **MA Stack** | EMA10 > EMA20, positive EMA50 slope, and close within 8% of EMA10. `ma_stack()["aligned"]`. |
+| **Extension Cap** | EC-01: close > 8% above EMA10 → `extension=True`, setup clamped to 3★. SMA50 distance reported separately as `sma50_extension_pct` (secondary field, never a gate). |
+| **Breakout** | A bar after base.end where close > pivot AND volume surge ≥ 1.5× baseline. `detect_breakout()` (`metrics.py:372`). |
+| **Variant** | `classic` (breakout above base's KDE pivot) or `lower_base` (two-base sequence: base A higher high → shallower base B below A's high → close above B's high but below A's high). `lower_base` capped at 4★; only `classic` reaches 5★. `classify_variant()` (`metrics.py:410`). |
+| **BO Setup Rating** | 3–5★ pure-math rating from 9 essential checks (incl. volume signature = dry-up ≤ 0.5× then surge ≥ 1.5×) + surge-threshold tiers + variant + extension cap. Deterministic, no LLM. `score_bo_setup()` (`metrics.py:432`). |
+| **BO Liquidity Gate** | Reuses VCP `passes_liquidity_gate()` / `MIN_ADV_DOLLAR` ($10M) — always enforced post-OHLCV-fetch. |
+| **BO Gate** | Post-detection: `rating ≥ 4` survives to enrichment. `passes_bo_gate()` (`gates.py:18`). |
+| **BO Down-Only Caps** | Reuses VCP `apply_vcp_caps()` — 5★→4★ if non-leader or declining sector; 4★→3★ if declining sector; 3★ stays 3★. `build_bo_rated_stock()` (`gates.py:23`). |
+| **BO Context Enrichment** | Agent 2 — reuses VCP Tavily dual-query enrichment as-is (`enrich_with_vcp_context`); no BO-specific agent. |
+| **BO Batch OHLCV Fetch** | Same `batch_get_stock_data()` as VCP (300 daily bars, persistent WebSocket). `run_bo_scan()` (`runner.py:81`). |
+| **BO Auto Run** | Wizard: Pipeline=BO → Screener (Stage 2 pre-filter) → Force Include (optional) → `apply_gates=True` → run_daily. Skips EP gate select, identical to VCP flow. |
+| **BO Manual — Apply Gate** | Wizard: Pipeline=BO → Force Include paste → "Apply Gate" → BO structural gate → survivors to enrichment. |
+| **BO Manual — Run All Pasted** | Wizard: Pipeline=BO → Force Include paste → "Run all pasted" → skip gates → ALL pasted continue to enrichment. |
+
+### BO Agent Pipeline
+
+| Agent | Name | Role | File |
+|-------|------|------|------|
+| **Agent 1 (BO)** | BO Structural Scanner | TradingView Stage 2 screener → force-include merge → batch OHLCV fetch → SPY RS line → Liquidity gate (ADV$ ≥ $10M) → BO setup detection (prior impulse, ADR envelope, VCI, MA stack, KDE pivot, higher lows, volume signature = dry-up + surge) → 3–5★ classification into buckets. | `scanners/bo/runner.py:81` |
+| **Agent 2 (BO)** | BO Context Enrichment | Reuses VCP Tavily dual-query enrichment (`enrich_with_vcp_context`). Only 4–5★ survivors (or all pasted if Run All). | `agents/enrichment.py:246` |
+| **Agent 3 (BO)** | BO Final Report | Merge setup rating + context enrichment → apply down-only caps (reuse `apply_vcp_caps`) → sort final_rating desc → write ranked artifact. | `pipeline.py:execute_bo_enrichment` |
+
+### BO Setup Rating Rubric (v1)
+
+| Parameter | 5★ (Textbook) | 4★ (Strong) | 3★ (Sub-standard) |
+|---|---|---|---|
+| **Prior Impulse** | ≥ 30% over 20–63d | ≥ 30% | < 30% |
+| **ADR20** | 4%–12% | 4%–12% | outside envelope |
+| **Base Duration** | 10–40d (optimal 15–25) | 10–40d | > 40d (stale) or absent |
+| **VCI** | ≤ 0.65 | ≤ 0.65 | > 0.65 |
+| **MA Stack / Surfing** | EMA10>EMA20, EMA50 slope > 0, close within 8% of EMA10 | aligned | not aligned or >8% extended |
+| **KDE Pivot** | in base upper quartile | in base upper quartile | absent |
+| **Higher Lows** | S_HL ≥ 1 | S_HL ≥ 1 | S_HL = 0 |
+| **Volume Surge** | ≥ 3.0× (classic) | ≥ 2.0× (classic) / ≥ 1.5× (lower_base) | < 1.5× (fakeout) |
+| **Variant** | classic | classic or lower_base (cap 4★) | none |
+
+### BO Down-Only Cap Rules (reuse VCP)
+
+| Setup Rating | Context Condition | Final Rating |
+|---|---|---|
+| 5★ | `is_category_leader=true` AND flag ≠ DECLINING_GROUP | 5★ (no cap) |
+| 5★ | `is_category_leader=false` OR `industry_group_strength_flag=DECLINING_GROUP` | 4★ (cap) |
+| 4★ | `industry_group_strength_flag=DECLINING_GROUP` | 3★ (cap) |
+| 4★ | HOT_SECTOR or NEUTRAL | 4★ (no cap) |
 | 3★ | Any | 3★ (already disqualified) |
 
 ---

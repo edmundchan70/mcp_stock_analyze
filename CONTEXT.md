@@ -81,7 +81,7 @@ The wizard path that chooses steps before executing. Order: Force Include first 
 _Avoid_: step mode, custom mode
 
 **Pipeline Type**:
-The scan family selected for a Daily Run. v1 has only `daily_ep_scan`.
+The scan family selected for a Daily Run. v1 has `daily_ep_scan`, `daily_vcp_scan`, and `daily_bo_scan`.
 _Avoid_: scanner mode, workflow type
 
 **Analysis Method**:
@@ -95,3 +95,67 @@ _Avoid_: scan dump, output blob
 **Run Progress**:
 The live terminal timeline of a Daily Run — persistent stage lines (Agent 1, Catalyst, EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only; not persisted to Run Artifacts.
 _Avoid_: logging, debug output
+
+---
+
+## BO (Qullamaggie Breakout) — Daily BO scan
+
+**BO Setup**:
+A Qullamaggie breakout setup: a stock with extreme prior momentum that consolidates in a tightening base and breaks out above resistance on strong volume, price hugging its short EMA (surfing).
+_Avoid_: VCP, breakout generic (without the Qullamaggie impulse/base context)
+
+**Prior Impulse**:
+The maximum % gain over a rolling 20–63 day window preceding the base. Required ≥ 30%.
+_Avoid_: 52-week momentum, YTD return
+
+**Base**:
+The 10–40 day consolidation after the prior impulse peak, with VCI ≤ 0.65, narrow pre-breakout 3-day range, KDE pivot in the upper quartile, and ≥ 1 higher low.
+_Avoid_: consolidation (unspecified), cup, pattern box
+
+**ADR20**:
+20-day Average Daily Range %, measured as mean((high−low)/close) over the last 20 bars. Must satisfy 4% ≤ ADR ≤ 12%.
+_Avoid_: volatility (unspecified), ATR
+
+**VCI**:
+Volatility Contraction Index = ATR(5)/ATR(20), measured through base end. ≤ 0.65 required.
+_Avoid_: ATR ratio, vol contraction score
+
+**KDE Pivot**:
+Gaussian KDE mode (bandwidth 3% of price) over base local peak highs, restricted to the base's upper quartile. The resistance level a breakout must clear.
+_Avoid_: resistance (unspecified), prior high
+
+**Higher Lows (S_HL)**:
+Count of consecutive strictly higher swing lows into the pivot. Required S_HL ≥ 1.
+_Avoid_: ascending lows (as a field name)
+
+**Volume Signature**:
+Base volume dry-up (base-end ≤ ~0.5× baseline) followed by breakout surge ≥ 1.5× baseline.
+_Avoid_: volume profile, VWAP
+
+**Surfing Distance**:
+Close distance from EMA10 (%). Within ±8% required; >8% above EMA10 = overextended → 3★ clamp.
+_Avoid_: extension (when meaning price above 50d SMA)
+
+**Variant**:
+`classic` (breakout above the base's KDE pivot) or `lower_base` (two-base sequence below the higher high). `lower_base` capped at 4★; only `classic` reaches 5★.
+_Avoid_: subtype, pattern type
+
+**BO Setup Rating**:
+The 3–5★ pure-math rating from the 8 essential parameters + surge threshold + variant + extension cap. Deterministic, no LLM.
+_Avoid_: star grade (as a field name), BO score
+
+**BO Gate**:
+Post-detection filter: setup rating ≥ 4 survives to context enrichment. Liquidity (ADV$ ≥ $10M) is always enforced.
+_Avoid_: soft gate, trend filter
+
+**BO Down-Only Caps**:
+Reuses VCP cap rules — context can only cap, never boost: 5★→4★ non-leader/declining sector; 4★→3★ declining sector.
+_Avoid_: upgrade rule, bonus stars
+
+**BO Context Enrichment**:
+Agent 2 reuses the VCP Tavily dual-query enrichment (`enrich_with_vcp_context`); no BO-specific agent. Runs only on 4–5★ survivors.
+_Avoid_: BO news agent, custom BO enrichment
+
+**Daily BO scan**:
+`pipeline_type="daily_bo_scan"` → `_run_daily_bo()` → `{name}_agent1/2/3.json`, mirroring the VCP daily run.
+_Avoid_: breakout pipeline (as a type name)

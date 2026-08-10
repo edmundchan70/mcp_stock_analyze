@@ -1,0 +1,321 @@
+﻿Quantifying Momentum Breakout Dynamics: Institutional Verification Engine and Algorithmic Test Suite for Qullamaggie Setups
+High-frequency and quantitative trading systems require exact mathematical definitions to separate structural market edges from generic technical noise. The momentum breakout strategy popularized by Kristjan Kullamägi (Qullamaggie) captures explosive, multi-day to multi-week trend continuations1. The strategy identifies equities that have demonstrated extreme prior momentum, consolidated within a tightening price structure, and broken out above horizontal resistance pivots while remaining supported by short-term exponential moving averages2.
+Generic technical stock screeners generate excessive false positives because they rely on static indicators, such as simple moving average crossovers or standard Relative Strength Index bounds. Translating the Qullamaggie Breakout (BO) setup into an institutional-grade automated pipeline requires formalizing the setup through multi-timeframe geometric metrics, dynamic volatility calculations, and deterministic algorithmic rules. This report provides a quantitative formalization of the setup, a low-latency screening architecture designed to minimize computational overhead, and an automated verification test suite to validate signal fidelity.
+Quantitative Formalization of the Qullamaggie Breakout Setup
+The Qullamaggie breakout methodology targets equities undergoing structural consolidation following a primary impulse move2. Market microstructure studies reveal that during the initial advance, aggressive institutional buying absorbs floating supply1. The subsequent consolidation represents a period of inventory digestion, where profit-taking is met with sustained buying interest rather than aggressive distribution3.
+
+
+
+
+
+
+                                  Breakout Trigger (Price > P_pivot)
+                                         /  + Volume Surge (>= 1.5x)
+                                        /
+        Peak (P_peak)                  /   Surfing 10/20 EMA
+           /\                         /   /
+          /  \   Tightening Base     /   /
+         /    \   (VCI <= 0.65)     /   /
+        /      \     /\     /\     /   /
+       /        \   /  \   /  \   /   /
+      /          \_/    \_/    \_/   /  <-- Higher Lows (S_HL >= 1)
+     /                                 
+    / 
+Prior Impulse 
+(+30% to +100%+)
+
+The mathematical model decomposes this price action into five distinct quantitative phases:
+Prior Momentum Impulse
+A qualifying equity must demonstrate a powerful price advance prior to entering its consolidation phase2. This prior impulse proves the presence of institutional accumulation and relative strength compared to the broader market index1.
+Let    and    denote the highest high and lowest low on trading day   . The prior momentum metric    evaluates the maximum percentage price expansion over a lookback window    trading days (1 to 3 months):
+  
+
+Setups demonstrating    (   advance) are categorized as High Tight Flag (HTF) candidates, which historical distributions show exhibit the highest rate of post-breakout expansion1.
+Volatility Context via Average Daily Range Percentage
+To ensure the asset possesses sufficient intraday volatility to achieve multi-R target multiples without exposing the portfolio to unmanageable slippage, the Average Daily Range percentage (  ) over a 20-day window must satisfy strict boundary conditions2.
+  
+
+  
+
+Equities with    are mathematically excluded due to insufficient price velocity, while equities with    are rejected due to excessive spread costs and elevated risk of gaps through stop-loss levels7.
+Structural Base Consolidation Mechanics
+Following its peak price   , the stock must transition into an orderly pullback2. The duration of this consolidation phase (  ) is bounded between 10 and 40 trading days (2 to 8 weeks)2. Empirical analysis shows that optimal breakout probability concentrates within the 15-to-25 day consolidation window3.
+  
+
+Volatility Contraction Index and Range Compression
+A critical requirement of the Qullamaggie setup is range tightening toward the right side of the base3. As supply dries up, daily trading ranges contract4. This Volatility Contraction Pattern (VCP) dynamics is quantified using two metrics: the ratio of short-term to medium-term Average True Range (  ), and the relative narrowness of the immediate pre-breakout candle range (  )2.
+  
+
+  
+
+This double boundary ensures that short-term volatility has compressed by at least    relative to its baseline, compressing the immediate risk distance (  ) prior to order execution2.
+Moving Average Alignment and Surfing Conditions
+The price structure must maintain dynamic support along key short-term exponential moving averages, specifically the 10-day EMA (  ) or 20-day EMA (  )2. Long-term moving averages must remain in strong upward alignment6.
+The moving average stack must satisfy three concurrent conditions:
+  
+
+  
+
+  
+
+Dynamic Volume Profile
+Volume behavior must validate supply absorption during consolidation and buying aggression on breakout execution3. Volume must dry up in the final days of the base, followed by an expansion on the breakout date3.
+  
+
+  
+
+Quantitative Rule Definitions
+
+
+Setup Metric
+	Generic Momentum Screener Threshold
+	Quantified Qullamaggie Rule
+	Microstructure Rationale
+	Prior Advance (  )
+	Price within    of 52-week high
+	  
+ advance over rolling    day window2
+	Isolates equities driven by strong institutional buying rather than slow index drift1.
+	Volatility Envelope (  )
+	Unfiltered or static standard deviation
+	  
+
+[cite: 2, 7]
+	Filters out sluggish assets (  ) and unmanageable, high-slippage assets (  )7.
+	Base Duration (  )
+	Static lookback (  -day breakout)
+	  
+ trading days2
+	Identifies active digestions while rejecting stale bases where momentum has decayed3.
+	Range Tightening (  )
+	Absent or basic RSI range check
+	  
+
+[cite: 6]
+	Measures volatility contraction directly to ensure minimal stop distance at entry2.
+	Moving Average Support
+	MA Crossovers (e.g., Golden Cross)
+	  
+ with distance   
+[cite: 2, 6, 7]
+	Verifies the stock is "surfing" short-term moving averages, confirming immediate demand2.
+	Volume Signature
+	Fixed daily volume    shares
+	Dry-up ratio    during base; Breakout surge   
+[cite: 3, 5]
+	Confirms supply exhaustion prior to breakout and aggressive institutional entry on trigger3.
+	Vectorized Screening Pipeline Architecture and Mathematical Engine
+Achieving institutional-grade throughput across a universe of thousands of US equities requires an architecture that avoids non-deterministic processing delays. Large Language Models (LLMs) are unsuitable for core technical screening due to inference latency, cost overhead, and non-deterministic logic. LLM integration should be restricted to asynchronous qualitative catalyst tagging—such as extracting sentiment metrics from earnings reports or regulatory filings1.
+The primary quantitative screening pipeline executes entirely via contiguous float64 linear algebra arrays, applying SIMD-vectorized operations over multi-dimensional market price tensors    (representing Open, High, Low, Close, Volume across    assets and    daily bars).
+Multi-Stage Vector Pipeline Mechanics
+The quantitative filtering pipeline processes assets through four sequential stages:
+Stage 1: Liquidity and Volatility Pre-Filtering
+The raw asset universe is filtered using high-throughput element-wise logical operations. Assets failing minimum share price (  ), daily volume (  ), dollar turnover (  ), or volatility bounds (  ) are immediately removed from memory allocations2.
+Stage 2: Structural Momentum and Trend Verification
+The pipeline evaluates matrix operations over historical window slices to confirm prior impulse magnitude (  )2. Concurrently, moving average arrays (  ) are calculated, enforcing strict scalar ordering and positive slope derivatives across the moving average stack2.
+Stage 3: Base Geometry and Volatility Contraction Engine
+Assets passing Stage 2 enter the base evaluation module. Base duration    is evaluated by identifying local maxima2. Volatility contraction is verified by calculating short-term to medium-term ATR ratios (  ) and 3-day range bounds relative to   2.
+Stage 4: Dynamic Trigger Engine
+Surviving setups are monitored intraday. A breakout trigger generates an alert or order when tick prices cross above the resistance pivot (  ) accompanied by intraday volume projecting a daily surge   3.
+Resistance Pivot Identification via Kernel Density Estimation
+To eliminate subjective visual chart interpretation, horizontal resistance pivots (  ) are calculated using local peak detection combined with Gaussian Kernel Density Estimation (KDE) over the consolidation period   4.
+Let    represent the daily high prices recorded during consolidation.
+Local peak highs    are identified where a daily high exceeds adjacent highs within a two-day radius:
+  
+
+A continuous Gaussian kernel probability density function    is constructed over the set of identified local peaks   :
+  
+
+The bandwidth parameter    is set dynamically to   , defining a search radius equal to    of current price. The horizontal pivot resistance    is set to the global mode of    located within the upper quartile of the consolidation price range4.
+Sequence of Higher Lows Integration
+A key structural characteristic before breakout execution is the formation of higher lows as price compresses against horizontal resistance3. The count of concurrent higher lows (  ) leading into the pivot is calculated as:
+  
+
+A valid setup requires    immediately preceding the breakout trigger, matching empirical distributions where premium setups average 1.75 higher low days before breaking out3.
+Comprehensive Unit and Edge-Case Test Suite
+To verify that the quantitative screener functions correctly and isolates true Qullamaggie breakout setups, an automated software test suite must run continuously against the data pipeline. This suite includes unit tests for isolated mathematical indicators and integration stress-tests using synthetic price action to filter out common false positives.
+Indicator Component Unit Tests
+Component unit tests validate isolated mathematical modules using deterministic synthetic arrays to ensure numerical precision before integration into the pipeline.
+
+
+
+
+
+
+                      +---------------------------------------+
+                     | Unit Test Execution Engine            |
+                     +---------------------------------------+
+                                         |
+       +---------------------------------+---------------------------------+
+       |                                 |                                 |
+       v                                 v                                 v
++-----------------------+     +-----------------------+     +-----------------------+
+|  UT-01: Prior Move    |     |  UT-02: ADR Bound     |     |  UT-03: Volatility    |
+|  Verifies >30% gain   |     |  Enforces 4% <= ADR   |     |  Contraction (VCI)    |
+|  in 20-63 day window  |     |  <= 12% limits        |     |  Validates ATR ratio  |
++-----------------------+     +-----------------------+     +-----------------------+
+       |                                 |                                 |
+       +---------------------------------+---------------------------------+
+                                         |
+       +---------------------------------+---------------------------------+
+       |                                 |                                 |
+       v                                 v                                 v
++-----------------------+     +-----------------------+     +-----------------------+
+|  UT-04: MA Alignment  |     |  UT-05: Pivot Cluster |     |  UT-06: Volume Dynamic|
+|  Confirms MA ordering |     |  KDE verification of  |     |  Dry-up and surge     |
+|  and positive slopes  |     |  resistance caps      |     |  threshold validation |
++-----------------------+     +-----------------------+     +-----------------------+
+
+Test Specifications
+* UT-01: Prior Impulse Gain
+   * Input Data: Array exhibiting a    gain over a 30-day period followed by a 15-day flat base.
+   * Expected Behavior: Function returns   , passing the    threshold2.
+   * Assertion: Assert boolean status TRUE.
+   * UT-02: ADR Envelope Verification
+   * Input Data: Test series A (  ), Series B (  ), Series C (  ).
+   * Expected Behavior: Series A rejected (insufficient range); Series B accepted; Series C rejected (excessive volatility)7.
+   * Assertion: Assert boolean vector [FALSE, TRUE, FALSE].
+      * UT-03: Volatility Contraction Index (  )
+         * Input Data: Price array where current    and baseline   .
+         * Expected Behavior: Returns   , passing the    threshold6.
+         * Assertion: Assert boolean status TRUE.
+            * UT-04: Moving Average Surfing Proximity
+            * Input Data: Closing price   ,   ,   ,   .
+            * Expected Behavior: Proximity   , passing surfing criteria2.
+            * Assertion: Assert boolean status TRUE.
+               * UT-05: Resistance Pivot Peak Detection
+               * Input Data: Daily highs array with recurring peak clusters at   .
+               * Expected Behavior: Gaussian KDE calculates global mode peak at   4.
+               * Assertion: Assert absolute difference   .
+                  * UT-06: Volume Profile Signature
+                  * Input Data: Baseline volume   . Base end volume   . Breakout day volume   .
+                  * Expected Behavior: Dry-up ratio   ; Expansion ratio   3.
+                  * Assertion: Assert dual volume condition evaluate to TRUE.
+Synthetic Edge-Case Stress Testing Matrix
+To protect real-time execution against structural market traps, the engine must correctly classify failure modes using injected synthetic price series.
+
+
+Test ID
+	Scenario Description
+	Injected Market Anomaly
+	Target Screener Reaction
+	Pass / Fail Condition
+	EC-01
+	Overextended Entry Expansion
+	Price surges    over 2 days prior to pivot break, extending distance to   .
+	Screener rejects setup during Stage 3 due to MA proximity violation (  )2.
+	PASS: Returns FALSE. Prevents chasing overextended entries9.
+	EC-02
+	Low-Volume Fakeout
+	Price breaches    intraday, but breakout volume reaches only   .
+	Trigger engine rejects execution during Stage 4 due to failed volume expansion3.
+	PASS: Returns FALSE. Filters low-liquidity false breakouts3.
+	EC-03
+	Extended Base Structural Decay
+	Base duration    extends to 60 days (   weeks), flattening moving average slopes.
+	Screener rejects setup during Stage 3 due to duration limit violation (  )2.
+	PASS: Returns FALSE. Avoids tying up capital in stale consolidations3.
+	EC-04
+	V-Shaped Rebound Cross
+	Sharp price recovery crosses    while    remains below   .
+	Trend module rejects setup during Stage 2 due to incorrect moving average alignment2.
+	PASS: Returns FALSE. Rejects unstable V-shaped rebounds2.
+	EC-05
+	High-Volatility Wildcard
+	Stock achieves    move, but price swings violently (  ).
+	Pre-filter rejects candidate during Stage 1 due to upper ADR boundary breach (  )7.
+	PASS: Returns FALSE. Excludes unmanageable risk configurations7.
+	EC-06
+	Downtrend Macro Overhead
+	Price breaks short-term base above   , but 50-day moving average slope is negative (  ).
+	Trend module rejects setup during Stage 2 due to macro trend slope violation6.
+	PASS: Returns FALSE. Blocks long trades in declining macro trends7.
+	Risk Allocation, Position Sizing, and Trailing Exit Strategy
+Capturing edge through screening requires strict execution discipline2. The trading model couples dynamic position sizing to defined capital risk thresholds, while employing a two-tier exit strategy to lock in gains and trail remaining shares2.
+
+
+
+
+
+
+Position Triggered at P_pivot
+ |
+ +--> Calculated Stop Loss at P_stop (Below Base Low)
+ |    Constraint: (P_entry - P_stop) <= 1.0 * ADR_dollar
+ |
+ +--> Price Advances to 2R - 3R (or Days 3-5)
+ |      |
+ |      +--> Tier 1: Sell 33% to 50% Position
+ |      +--> Move Stop Loss to Breakeven (P_entry)
+ |
+ +--> Remainder Trails Along EMA_10
+        |
+        +--> Tier 2: Exit 100% on Daily Close < EMA_10
+
+Risk-Adjusted Position Sizing Framework
+Position size is calculated dynamically based on total account portfolio value (  ), target trade risk percentage (  ), and the distance to the structural stop loss (  )2.
+Let    denote the execution buy price, and    represent the low of the consolidation base or the breakout day low2.
+1. Absolute Risk Distance
+  
+
+2. ADR Volatility Constraint
+To prevent taking oversized risk on wide setups, the stop distance must not exceed   2:
+  
+
+If   , the setup is rejected or position sizing is recalculated using    as the denominator, reducing position size to accommodate the wider stop2.
+3. Share Order Allocation
+Target trade risk    is bounded between    and    of liquid portfolio capital (  )2. The total allocation per position is capped at a maximum portfolio weight    (   total capital allocation)2:
+  
+
+  
+
+  
+
+Two-Tier Quantitative Exit Model
+The exit framework employs a dual-stage system: taking partial profits into early momentum strength to secure trade equity, then trailing the remaining position along an exponential moving average to capture extended trends2.
+
+
+
+
+
+
+Cumulative Return (R)
+   ^
+4R |                                                     / Exit Remainder on Close < EMA_10
+   |                                                    /
+3R |                                  /\               /
+   |      Partial Profit Target      /  \             /
+2R |------ [ Sell 1/3 to 1/2 ] -----/    \           /
+   |      (Day 3-5 or 2R-3R)             \         /  <-- Trailing along EMA_10
+1R |        |                             \_______/
+   |        v
+0R |--- Move Stop to Breakeven ---
+   |
+-1R |--- Initial Structural Stop (P_stop) ---
+   +------------------------------------------------------------------------> Time
+
+Tier 1: Partial Profit Lock and Risk Neutralization
+When price advances    to    above entry (where   ), or reaches a holding duration of 3 to 5 trading days,    to    of the initial position size is liquidated via market order2.
+Concurrently, the stop loss on the remaining shares is moved to breakeven (  )2. This eliminates capital risk on the position while securing positive trade expectancy2.
+Tier 2: Moving Average Trend Trailing Exit
+The remaining position is held as long as price continues to close above short-term trend support2. If the daily closing price drops below the 10-day EMA (  ), the remaining position is liquidated on the next market open2. (For wider base structures, the 20-day EMA may be substituted as the trailing anchor)2.
+The unified exit decision engine operates according to the following piece-wise state function:
+  
+
+Conclusions and Implementation Roadmap
+Standardizing the Qullamaggie Breakout setup into an automated quantitative pipeline replaces subjective manual charting with mathematical precision4. By formalizing prior impulse metrics (  ), volatility boundaries (  ), range contraction indices (  ), and moving average surfing conditions, the system isolates high-expectancy momentum setups while filtering out low-quality consolidations2.
+Operational Directives for System Deployment
+                     * Deploy Vectorized Array Operations: Rely on contiguous float64 array operations across tensor memory blocks to maintain sub-second multi-asset processing speeds without non-deterministic LLM latency.
+                     * Enforce Strict Volatility Bounds: Enforcing the    stop constraint prevents taking wide setups, ensuring position sizing remains aligned with current market volatility2.
+                     * Automate Test Suite Verification: Run indicator unit tests (UT-01 to UT-06) and synthetic edge-case stress tests (EC-01 to EC-06) continuously within the integration pipeline to guard against false positive signals and execution traps3.
+                     * Systematize Exit Execution: Automate partial profit taking at   , breakeven stop adjustments, and daily closing trailing exits below the 10-day EMA to eliminate emotional bias during position management2.
+Works cited
+                        1. Deep Dive into Kristjan Kullamägi's Swing Trading Strategies: An In-Depth Guide - Medium, https://medium.com/@refikberkol/deep-dive-into-kristjan-kullam%C3%A4gis-swing-trading-strategies-an-in-depth-guide-7872e7f1a0cb
+                        2. Qullamaggie Breakout Planner | Free ADR & Position Size - Share Predictions, https://sharepredictions.com/tools/qullamaggie-breakout-planner/
+                        3. Analyzing Qullamaggie Breakout Setups | PDF | Moving Average - Scribd, https://www.scribd.com/document/909881262/Qullamaggie-setups-analysis-1
+                        4. How To Invest Like Mark Minervini - Momentum Trading Champion, https://pictureperfectportfolios.com/how-to-invest-like-mark-minervini-momentum-trading-champion/
+                        5. Mastering the Volatility Contraction Pattern - TraderLion, https://traderlion.com/technical-analysis/volatility-contraction-pattern/
+                        6. [Python] Quantifying Mark Minervini's VCP Strategy: Automating US Stock Scanning to AI Diagnosis - DEV Community, https://dev.to/emma019/python-quantifying-mark-minervinis-vcp-strategy-automating-us-stock-scanning-to-ai-diagnosis-3mdc
+                        7. How Trading Really Works: 20 Principles You Need To Know (Part 1) : r/swingtrading, https://www.reddit.com/r/swingtrading/comments/1uebw89/how_trading_really_works_20_principles_you_need/
+                        8. Volatility Contraction Pattern (VCP): Complete Guide — Mark Minervini - Finer Market Points, https://www.finermarketpoints.com/post/what-is-a-vcp-pattern-mark-minervini-s-volatility-contraction-pattern-explained
+                        9. Qullamaggie Breakout Tracking Strategy | FMZ, https://www.fmz.com/lang/en/strategy/440560

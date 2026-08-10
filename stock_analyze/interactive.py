@@ -226,6 +226,7 @@ def _run_auto() -> int:
         [
             Choice("Daily EP scan", value="daily_ep_scan"),
             Choice("Daily VCP scan", value="daily_vcp_scan"),
+            Choice("Daily BO scan", value="daily_bo_scan"),
         ],
         default="daily_ep_scan",
     )
@@ -241,8 +242,10 @@ def _run_auto() -> int:
     apply_gates = True
 
     is_vcp = pipeline == "daily_vcp_scan"
+    is_bo = pipeline == "daily_bo_scan"
+    skips_ep_gate = is_vcp or is_bo
 
-    if not is_vcp:
+    if not skips_ep_gate:
         select = _prompt_gate()
         if select is None:
             return 2
@@ -253,9 +256,9 @@ def _run_auto() -> int:
 
     cfg = RunConfig(
         name=name,
-        select="strict" if is_vcp else select,  # type: ignore[arg-type]
+        select="strict" if skips_ep_gate else select,  # type: ignore[arg-type]
         run_catalyst=True,
-        analysis_method="ep_rating" if not is_vcp else None,
+        analysis_method="ep_rating" if not skips_ep_gate else None,
         force_keys=force_keys or None,
         use_screener=use_screener,
         apply_gates=apply_gates,
@@ -272,6 +275,7 @@ def _run_manual() -> int:
         [
             Choice("Daily EP scan", value="daily_ep_scan"),
             Choice("Daily VCP scan", value="daily_vcp_scan"),
+            Choice("Daily BO scan", value="daily_bo_scan"),
         ],
         default="daily_ep_scan",
     )
@@ -279,6 +283,8 @@ def _run_manual() -> int:
         return 2
 
     is_vcp = pipeline == "daily_vcp_scan"
+    is_bo = pipeline == "daily_bo_scan"
+    skips_ep_gate = is_vcp or is_bo
 
     force_keys, cancelled = _prompt_force_include()
     if cancelled:
@@ -294,14 +300,14 @@ def _run_manual() -> int:
         if apply_gates_choice is None:
             return 2
         apply_gates = apply_gates_choice
-        if apply_gates and not is_vcp:
+        if apply_gates and not skips_ep_gate:
             select = _prompt_gate()
             if select is None:
                 return 2
         else:
             select = "both"
     else:
-        if not is_vcp:
+        if not skips_ep_gate:
             select = _prompt_gate()
             if select is None:
                 return 2
@@ -312,10 +318,10 @@ def _run_manual() -> int:
     analysis_method: Optional[AnalysisMethod]
     cancelled_run: bool
 
-    if is_vcp:
-        # VCP Manual: Apply Gate / Run all pasted already chosen above
+    if skips_ep_gate:
+        label = "VCP" if is_vcp else "BO"
         enrichment = _select(
-            "Run VCP context enrichment (Agent 2-3)?",
+            f"Run {label} context enrichment (Agent 2-3)?",
             [
                 Choice("Yes — Tavily dual-query + final rating", value="yes"),
                 Choice("No — Agent 1 only (structural scan)", value="no"),

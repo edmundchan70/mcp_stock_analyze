@@ -135,6 +135,52 @@ def fetch_us_vcp_universe(
     return [r for r in dataframe_to_rows(df) if _is_us_listed(r)]
 
 
+def fetch_us_bo_universe(
+    *,
+    min_price: float = 10.0,
+    min_adv: float | None = None,
+    min_mktcap: float = 100_000_000,
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    """Pull US equities from TradingView screener with Qullamaggie pre-filters.
+
+    Qullamaggie names must already be in a Stage 2 uptrend with liquid enough
+    dollar volume for a breakaway gap. Filters at source: close >= $10,
+    close > SMA50, close > SMA200, ADV >= $10M, mktcap >= $100M, america market.
+    Sorted by volume descending.
+    """
+    from tradingview_screener import Query, col
+    from stock_analyze.scanners.vcp.gates import MIN_ADV_DOLLAR
+
+    if min_adv is None:
+        min_adv = MIN_ADV_DOLLAR
+
+    query = (
+        Query()
+        .select(*VCP_COLUMNS)
+        .where(
+            col("close") >= min_price,
+            col("close") > col("SMA50"),
+            col("close") > col("SMA200"),
+            col("average_volume_60d_calc").multiply(col("close")) >= min_adv,
+            col("market_cap_basic") >= min_mktcap,
+            col("type").isin(["stock"]),
+        )
+        .order_by("volume", ascending=False)
+        .limit(limit)
+    )
+    if hasattr(query, "set_markets"):
+        query = query.set_markets("america")
+
+    count, df = query.get_scanner_data()
+    logger.info(
+        "BO screener returned %s rows (reported count=%s)",
+        len(df) if df is not None else 0,
+        count,
+    )
+    return [r for r in dataframe_to_rows(df) if _is_us_listed(r)]
+
+
 def fetch_symbols(
     symbols: Sequence[tuple[str, str]],
     *,
