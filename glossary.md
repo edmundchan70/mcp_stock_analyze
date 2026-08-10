@@ -10,12 +10,12 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **Gap %** | `(open − prior close) / prior close` for the regular session. |
 | **RVOL10** | `volume / 10-day average volume`. |
 | **Event Day Dollar Volume** | Dollars traded on the gap day. |
-| **Average Daily Dollar Volume** | Typical daily dollars traded over ~50 days (pre-gap liquidity). Screener uses TradingView `AvgValue.Traded_60d` as the nearest bulk field. |
-| **Force Include** | Pasted symbol list. Fast regex pre-parser for clean ticker lists (1–5 char, comma-separated); falls through to cheap LLM for messy/mixed text. On confirm may be the sole Universe (screener skipped); Skip leaves screener workflow unchanged. |
+| **Average Daily Dollar Volume** | Typical daily dollars traded over ~50 days (pre-gap liquidity). Computed from Polygon.io OHLCV data. |
+| **Force Include** | Pasted symbol list. Fast regex pre-parser for clean ticker lists (1–5 char, comma-separated); falls through to cheap LLM for messy/mixed text. On confirm is **the sole Universe** (paste-mandatory; screener removed). |
 | **Force Include Parse Result** | `ForceIncludeParseResult` dataclass (`force_include.py:37`): symbols (list[`SymbolKey`]), rejected (unparseable tokens), errors (parsing errors). |
 | **Fast Parse** | Regex pre-parser in Force Include that matches clean `[A-Za-z]{1,5}` tokens without calling the LLM. Falls through to LLM on any ambiguous token. |
-| **Universe** | Symbols in one scan: screener-only (`universe_source=screener`), paste-only (`universe_source=force`), or hybrid. |
-| **Universe Source** | Literal `"screener"`, `"force"`, or `"hybrid"` — tracks origin of the symbol set for a scan. |
+| **Universe** | Symbols in one scan: force-only (`universe_source=force`). Paste-mandatory post-Polygon migration (screener removed). |
+| **Universe Source** | Literal `"force"` only — origin of the symbol set for a scan. Screener has been removed; only paste (force) is supported. |
 | **SymbolKey** | `(symbol: str, exchange: str)` tuple, e.g. `("AAPL", "NASDAQ")`. Unique identifier used for force-include dedup, merge, and resolution. |
 | **Apply Gate filter** | Fetch metrics, apply Baseline/Strict; only survivors continue. Auto always; Manual choice after paste. |
 | **Run all pasted** | Manual-only: fetch metrics for all pasted names, skip gates, continue all to Catalyst. |
@@ -26,13 +26,13 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **EP Catalyst Match** | `ep_rating >= 4` — default names to chart manually. |
 | **Hard Caps** | Down-only clamps applied post-LLM in Agent 3: `UNKNOWN`/no catalyst → max 2; `PR` → max 3; `CONTRACT`/`FDA` → max 4; `rvol10 < 3` → max 4. Only `EARNINGS`/`GUIDANCE` can reach 5. |
 | **Soft-fail** | Per-symbol error pattern: catch exception, produce a degraded stock entry (`catalyst_found=false`, `ep_rating=1`, error message prefixed in summary/rationale) instead of aborting the entire batch. Used in both Agent 2 and Agent 3. |
-| **OHLCV Fallback** | When TradingView screener misses a force-include symbol, compute gap % and RVOL10 from 60 daily OHLCV bars via tvDatafeed. (`tradingview.py:74`) |
+| **OHLCV Fallback** | When a force-include symbol needs metrics, gap % and RVOL10 are computed from 300 daily OHLCV bars via Polygon.io (`polygon.py`). |
 | **EnrichResult** | `EnrichResult` dataclass (`tradingview.py:24`): symbol, exchange, row (dict if successful), errors. `.ok` property is `True` when row is populated. |
 | **Exchange Fallback** | When primary exchange OHLCV enrichment fails, retry on NASDAQ → NYSE → AMEX → BATS → CBOE (1 attempt each). Socket is closed between exchanges to prevent stale-socket timeouts. (`tradingview.py:146`, `symbols.py:10`) |
 | **Trade Opportunity Auto-Detect** | **v2 (deferred):** OHLCV pivot/base setup detection. Not in v1. |
 | **Tavily Search** | News/web search API used in Agent 2–3 for both EP (catalyst event search) and VCP (dual-query: taxonomy + leadership). Free tier: 1,000 searches/month. |
 | **Tavily Dual-Query** | VCP-specific: two parallel Tavily calls per stock — Query 1 (sector/industry taxonomy, basic depth) + Query 2 (market leadership/growth catalysts, advanced depth). Executed concurrently per stock with bounded asyncio semaphore. |
-| **Batch OHLCV** | `batch_get_stock_data()`: persistent WebSocket, fetches 300 daily bars per stock for up to 250 stocks sequentially with 300ms inter-fetch delay and proactive socket refresh every 50 stocks. ~7.5 min/run. Used by VCP Agent 1; EP uses single-fetch `get_stock_data()`. |
+| **Batch OHLCV** | `batch_get_stock_data()` in `polygon.py`: fetches 300 daily bars per stock via Polygon.io REST API with ThreadPoolExecutor concurrency, retry on rate-limit/5xx, soft-fail per symbol. Used by VCP and BO Agent 1; EP uses single-fetch `get_stock_data()`. |
 | **Daily Run** | One stamped execution of the configured agent chain. |
 | **Auto Run** | Wizard: Pipeline (EP/VCP/BO) → Force Include → Gate → name. Paste skips screener and always applies Gate. For EP: screener + Baseline/Strict gates. For VCP/BO: screener (Stage 2 pre-filter) + structural gates. |
 | **Manual Run** | Wizard: Force Include first; paste offers Apply Gate vs Run all, then Catalyst / Analysis / name. For EP: Baseline/Strict gates. For VCP/BO: structural gates (Apply) or no gates (Run all pasted). |
@@ -42,12 +42,14 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **RunConfig** | `RunConfig` dataclass (`pipeline.py:49`): all pipeline parameters — name, select, run_catalyst, analysis_method, limit, force_keys, use_screener, apply_gates, min_rating, pipeline_type, output_root. |
 | **RunResult** | `RunResult` dataclass (`pipeline.py:64`): exit_code, run_dir, steps_completed, error. Returned by `run_daily()`. |
 | **Run Progress** | Live terminal timeline of a Daily Run: persistent stage lines (Agent 1 / Catalyst / EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only, not persisted to Run Artifacts. The batch OHLCV phase gets its own Rich progress bar with elapsed time and ETA, throttled every 5 fetches to avoid flicker. (`progress.py:49`) |
+| **Polygon.io** | Official stock market data API (`polygon-api-client` SDK). Replaces TradingView (tvDatafeed + tradingview_screener) as the sole data source. Provides Ticker Details (symbol resolution, exchange, market cap) and daily aggregate bars (OHLCV). Polyfill for the removed Screener Pre-Filter via `passes_market_cap_gate()`. Config via `POLYGON_API_KEY` in `.env`. (`polygon.py:24`) |
+| **Market Cap Gate** | Post-screener replacement: `passes_market_cap_gate()` enforces `market_cap >= MIN_MARKET_CAP` ($100M). None/missing always rejects (conservative). Applied post-symbol-resolution, pre-OHLCV-fetch in VCP/BO runners. (`scanners/vcp/gates.py:33`) |
 
 ### EP Agent Pipeline
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (EP)** | Technical Filter | TradingView screener → force-include merge → normalize rows → dual Baseline/Strict gate classification. | `scanners/ep/runner.py:17` |
+| **Agent 1 (EP)** | Technical Filter | Polygon.io force-include merge → normalize rows → dual Baseline/Strict gate classification. | `scanners/ep/runner.py:17` |
 | **Agent 2 (EP)** | Catalyst Intelligence | Tavily news search (max_results=3) per symbol → OpenRouter LLM compresses to `CatalystSummary`. Soft-fails per symbol. | `agents/catalyst.py:78` |
 | **Agent 3 (EP)** | EP Rating | Independent Tavily re-fetch (max_results=5) per symbol → OpenRouter LLM rates 1–5 → hard caps applied → sorted best→worst. | `agents/rating.py:72` |
 
@@ -63,33 +65,30 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 
 | Order | Gate | Type | When Applied | On Failure | Gated? |
 |---|---|---|---|---|---|
-| **Gate 0** | **Screener Pre-Filter** — `fetch_us_vcp_universe()` (`screener.py:93`) | TradingView REST: close ≥ $10, close > SMA50/SMA200, 60d ADV × close ≥ `MIN_ADV_DOLLAR` ($10M), mktcap ≥ $100M, type=stock, america market, sorted by volume desc, limit 300. | Auto-mode only. Returns pre-filtered rows from TradingView's universal scan. | Stock never enters the pipeline. Force-included (pasted) symbols bypass this entirely. | Auto mode only |
-| **Gate 1** | **Liquidity Gate** — `passes_liquidity_gate()` (`gates.py:29`) | Hard pre-requisite: 60d ADV$ ≥ `MIN_ADV_DOLLAR` ($10M) computed pure-math from OHLCV DataFrame (`avg_volume × close` over last 60 bars). Uses the same shared `MIN_ADV_DOLLAR` constant as Gate 0. | Post-OHLCV-fetch, pre-VCP-scoring. **Always enforced** — even in "Run all pasted" mode. | Silently skipped (no entry in any bucket). Protects against force-included illiquid stocks (e.g., MOG.B at ~$254K ADV). | Always |
-| **Gate 2** | **Stage 2 Trend Template** — `passes_stage2_gate()` (`gates.py:43`) | RS ≥ 70 AND `is_stage2=True` (price > 50/200 SMA, rising 200 SMA). | Post-VCP-scoring, only if `apply_gates=True`. | Downgraded to 3★ but still appears in 3★ bucket for visibility. | `apply_gates` |
-| **Gate 3** | **VCP Structural Gate** — `passes_vcp_gate()` (`gates.py:48`) | `structural_rating ≥ 4`. Only 4–5★ survivors pass to Agent 2/3 (context enrichment + final report). | Post-detection classification, only if `apply_gates=True`. | Stays in 3★ bucket; no Tavily enrichment, no final report. | `apply_gates` |
+| **Gate 1** | **Market Cap Gate** — `passes_market_cap_gate()` (`gates.py:33`) | Post-screener replacement: market_cap ≥ `MIN_MARKET_CAP` ($100M). Resolved via Polygon Ticker Details. None/missing always rejects. | Post-symbol-resolution, pre-OHLCV-fetch. **Always enforced** — replaces old TradingView screener pre-filter. | Silently skipped (no entry in any bucket). | Always |
+| **Gate 2** | **Liquidity Gate** — `passes_liquidity_gate()` (`gates.py:29`) | Hard pre-requisite: 60d ADV$ ≥ `MIN_ADV_DOLLAR` ($10M) computed pure-math from OHLCV DataFrame (`avg_volume × close` over last 60 bars). | Post-OHLCV-fetch, pre-VCP-scoring. **Always enforced** — even in "Run all pasted" mode. | Silently skipped (no entry in any bucket). Protects against force-included illiquid stocks. | Always |
+| **Gate 3** | **Stage 2 Trend Template** — `passes_stage2_gate()` (`gates.py:43`) | RS ≥ 70 AND `is_stage2=True` (price > 50/200 SMA, rising 200 SMA). | Post-VCP-scoring, only if `apply_gates=True`. | Downgraded to 3★ but still appears in 3★ bucket for visibility. | `apply_gates` |
+| **Gate 4** | **VCP Structural Gate** — `passes_vcp_gate()` (`gates.py:48`) | `structural_rating ≥ 4`. Only 4–5★ survivors pass to Agent 2/3 (context enrichment + final report). | Post-detection classification, only if `apply_gates=True`. | Stays in 3★ bucket; no Tavily enrichment, no final report. | `apply_gates` |
 
-### Force Include to OHLCV Resolution Flow
+### Force Include to OHLCV Resolution Flow (Polygon.io)
 
-When a user pastes symbols, the pipeline resolves them in **three distinct TradingView API layers** before VCP scoring begins:
+When a user pastes symbols, the pipeline resolves them via Polygon.io:
 
 | Step | API | What It Does | Per-Symbol? | File |
 |---|---|---|---|---|
-| **1. Screener Lookup** (`fetch_symbols()`) | `tradingview_screener` (REST) | `where(col("name").isin(pasted_names))` — tiny targeted query: "give me screener rows for exactly these N tickers." Not a broad market scan. | No — one REST call for all symbols. | `screener.py:138` |
-| **2. OHLCV Fallback** (`enrich_with_retry()`) | `tvDatafeed` (WebSocket, 60 bars) | For each symbol the screener missed: `tv.get_hist(symbol, exchange, daily, n_bars=60)` → compute gap%, RVOL10, ADV$ locally → synthesize screener-identical row. Tries primary exchange (1 attempt) then fallback chain: NASDAQ → NYSE → AMEX → BATS → CBOE (1 attempt each). Fresh WebSocket per exchange attempt. | Yes — one `get_hist()` per missing symbol. | `tradingview.py:73,146` |
-| **3. Batch OHLCV** (`batch_get_stock_data()`) | `tvDatafeed` (WebSocket, 300 bars) | For ALL merged symbols (screener hits + OHLCV-resolved misses): persistent WebSocket, `tv.get_hist(symbol, exchange, daily, n_bars=300)`, 300ms inter-fetch delay, socket refreshed every 50 stocks, soft-fails per symbol. This is where the liquidity gate fires. | Yes — one `get_hist()` per symbol. | `tradingview_data.py:449` |
+| **1. Ticker Details** (`resolve_force_symbol()`) | `polygon-api-client` (REST) | `get_ticker_details(symbol)` — resolve symbol to exchange, market cap, name, description. | Yes — one call per symbol. | `polygon.py:198` |
+| **2. OHLCV Fetch** (`get_stock_data()` / `batch_get_stock_data()`) | `polygon-api-client` (REST) | For each symbol: `get_aggs(symbol, daily, n=300)` → DataFrame with open/high/low/close/volume. `batch_get_stock_data()` uses ThreadPoolExecutor with retry on rate-limit/5xx. | Yes — one `get_aggs()` per symbol. | `polygon.py:82,148` |
 
-**Key insight**: Pasted symbols **skip the big TradingView universal scan** (Gate 0). They go through a tiny `isin()` lookup instead. The heavy WebSocket batch (Step 3) always runs regardless of paste vs screener — it's the source of all VCP scoring data.
+**Key insight**: Pasted symbols are resolved directly via Polygon.io Ticker Details → OHLCV. No TradingView screener or WebSocket layer. Market cap gate is enforced post-resolution.
 
 ### VCP Error Handling
 
 | Scenario | Mechanism | User Impact |
 |---|---|---|
-| **Screener API fails** | `execute_vcp_scan()` catches, sets `screener_rows=[]`, continues with force-only universe. | Pipeline runs on pasted symbols only. |
-| **Screener misses a pasted symbol** | `enrich_with_retry()` — tries primary exchange then NASDAQ → NYSE → AMEX → BATS → CBOE (1 attempt each, fresh socket per attempt). | Symbol resolved or recorded in `_failed_force`. |
-| **All 5 exchanges fail for a pasted symbol** | Returns `EnrichResult.ok=False`, appended to `_failed_force` list, persisted in agent1 JSON as `"_failed_force"`. | Terminal prints red warning: "Force-include symbols could not be enriched after retries on all exchanges" with a hint to fix ticker/exchange and re-run. Symbol excluded from pipeline. |
-| **Batch OHLCV fails for one symbol** | `batch_get_stock_data()` stores `None`, closes/reopens WebSocket, continues to next symbol. `run_vcp_scan()` skips `None` entries. | Symbol silently excluded from VCP scoring. |
+| **Polygon symbol resolution fails** | `resolve_force_symbol()` returns `None` → appended to `_failed_force` list, persisted in agent1 JSON. | Terminal prints warning: "Force-include symbols could not be resolved via Polygon". Symbol excluded from pipeline. |
+| **Polygon Ticker Details API fails** | `resolve_force_symbol()` catches exception, returns `None`. | Same as resolution failure — symbol excluded from pipeline. |
+| **Batch Polygon OHLCV fails for one symbol** | `batch_get_stock_data()` retries on rate-limit/5xx, stores `None` if all retries exhausted. `run_vcp_scan()` / `run_bo_scan()` skips `None` entries. | Symbol silently excluded from VCP/BO scoring. |
 | **Liquidity gate rejects a symbol** | `passes_liquidity_gate()` returns `False` → `continue` in `run_vcp_scan()`. | Symbol silently excluded (no rating, no bucket). |
-| **WebSocket Lifecycle** | `_close_tv_socket()` called: (a) before every `get_hist()` in single-fetch mode, (b) after every `get_hist()` in single-fetch mode, (c) before batch starts, (d) every 50 successful batch fetches, (e) on any batch error, (f) after batch completes. Prevents stale WebSocket timeouts from cascading. `tradingview_data.py:23` | Transparent to user; handled internally. |
 | **Stage 2 Trend Template** | Minervini's uptrend checklist: price > 50-day SMA > 150-day SMA > 200-day SMA; 200-day SMA is rising; stock near 52-week high. Required for any VCP to qualify above 3★. |
 | **RS Line** | Relative Strength line: `stock_close / spy_close` computed daily. RS ≥ 85 for 5★, RS ≥ 70 for 4★. Computed pure-math from OHLCV, not via TradingView screener. |
 | **52-Week High Proximity** | `current_price / 52W_high`. Within 0–10% for 5★, within 10–20% for 4★, >25% below = 3★. |
@@ -121,7 +120,7 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (VCP)** | VCP Structural Scanner | TradingView Stage 2 screener → force-include merge → batch OHLCV fetch → SPY RS line → Liquidity gate (ADV$ ≥ $10M) → Stage 2 gate → VCP pattern detection (pure math, 9 params) → 1–5★ classification into buckets. | `scanners/vcp/runner.py:72` |
+| **Agent 1 (VCP)** | VCP Structural Scanner | Polygon force-include merge → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $100M) → Liquidity gate (ADV$ ≥ $10M) → Stage 2 gate → VCP pattern detection (pure math, 9 params) → 1–5★ classification into buckets. | `scanners/vcp/runner.py:72` |
 | **Agent 2 (VCP)** | VCP Context Enrichment | Tavily dual-query per symbol (taxonomy + leadership, parallel) → OpenRouter LLM parses into `VcpContextEnrichment` → applies down-only caps. Only 4–5★ survivors (or all pasted if Run All). | `agents/enrichment.py:164` |
 | **Agent 3 (VCP)** | VCP Final Report | Merge structural rating + context enrichment → apply cap rules → sort final_rating desc → write ranked artifact. | `pipeline.py:353` |
 
@@ -157,14 +156,16 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 
 | Term | Meaning |
 |---|---|
-| **BO** | Qullamaggie Breakout setup — a stock with extreme prior momentum (prior impulse ≥ 30% over 20–63 days), consolidating in a tightening base (10–40 days), then breaking out above resistance (KDE pivot) with a volume surge (≥ 1.5× baseline) while hugging its EMA10. Structural + contextual. |
+| **BO** | Qullamaggie Breakout setup — a stock with extreme prior momentum (prior impulse ≥ 30% over 20–63 days), consolidating in a tightening base (5–40 days), then breaking out above resistance (KDE pivot) with a volume surge (≥ 1.5× baseline) while hugging its EMA10. Structural + contextual. |
 | **Prior Impulse** | Max % gain over a rolling 20–63 day window. Required ≥ 30%. `prior_impulse(closes)` (`metrics.py:43`). |
 | **ADR20** | 20-day Average Daily Range % = mean((high−low)/close) over last 20 bars. Must satisfy 4% ≤ ADR ≤ 12% envelope — below = sluggish, above = excessive spread/gap risk. `avg_daily_range_pct()` (`metrics.py:70`), `passes_adr_envelope()` (`gates.py:13`). |
-| **Base** | The consolidation after the impulse peak, measured 10–40 trading days, with VCI ≤ 0.65, a narrow pre-breakout 3-day range, a KDE pivot in the upper quartile, and S_HL ≥ 1 higher lows. `detect_bases()` (`metrics.py:338`). |
+| **Base** | The consolidation after the impulse peak, measured 5–40 trading days, with VCI ≤ 0.65, a narrow pre-breakout 3-day range, a KDE pivot in the upper quartile, and S_HL ≥ 1 higher lows. `detect_bases()` (`metrics.py:338`). |
 | **VCI** | Volatility Contraction Index = ATR_short(5) / ATR_medium(20), measured through the base end. Must be ≤ 0.65. `vci_atr()` (`metrics.py:94`). |
 | **KDE Pivot** | Gaussian KDE (bandwidth = 3% of current price) over local peak highs (2-day radius) of the base window; pivot = global KDE mode located in the upper quartile of the base's high-low range. `kde_pivot()` (`metrics.py:157`). |
 | **Higher Lows (S_HL)** | Count of consecutive strictly higher swing lows (2-day radius) leading into the pivot. Required S_HL ≥ 1. `higher_lows()` (`metrics.py:210`). |
 | **Volume Signature** | Dual condition (UT-06): base-end volume must dry up to ≤ ~0.5× pre-base baseline **and** the breakout bar must surge ≥ 1.5× baseline. Both enforced as the volume essential in `score_bo_setup()`. `volume_signature()` (`metrics.py:255`). |
+| **BO 9 Essentials** | The 9 boolean flags persisted on `BoSetupRating` that must all be true for >3★: `prior_impulse`, `adr20`, `base_duration`, `vci`, `ma_stack`, `pivot_kde`, `higher_lows`, `dryup`, `volume_surge`. Canonical order defined in `ESSENTIAL_KEYS` (`metrics.py:41`). |
+| **BO Near-Miss** | A 3★ `BoSetupRating` that passed ≥ 7 of 9 essentials and is NOT overextended. Persisted as `BoNearMiss` in `BoScanBucket.near_miss`, computed only when `apply_gates=True`. Sorted closest-first (`failed_count` asc, `rs_rating` desc, `None` last). Printed as a table on the no-4-5★ survivor short-circuit. Model: `models/bo.py:BoNearMiss`. |
 | **Surfing Distance** | Close distance from EMA10 (%). Must be within ±8% — >8% above EMA10 = overextended → clamp to 3★. `ma_stack()` (`metrics.py:116`). |
 | **MA Stack** | EMA10 > EMA20, positive EMA50 slope, and close within 8% of EMA10. `ma_stack()["aligned"]`. |
 | **Extension Cap** | EC-01: close > 8% above EMA10 → `extension=True`, setup clamped to 3★. SMA50 distance reported separately as `sma50_extension_pct` (secondary field, never a gate). |
@@ -175,7 +176,7 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 | **BO Gate** | Post-detection: `rating ≥ 4` survives to enrichment. `passes_bo_gate()` (`gates.py:18`). |
 | **BO Down-Only Caps** | Reuses VCP `apply_vcp_caps()` — 5★→4★ if non-leader or declining sector; 4★→3★ if declining sector; 3★ stays 3★. `build_bo_rated_stock()` (`gates.py:23`). |
 | **BO Context Enrichment** | Agent 2 — reuses VCP Tavily dual-query enrichment as-is (`enrich_with_vcp_context`); no BO-specific agent. |
-| **BO Batch OHLCV Fetch** | Same `batch_get_stock_data()` as VCP (300 daily bars, persistent WebSocket). `run_bo_scan()` (`runner.py:81`). |
+| **BO Batch OHLCV Fetch** | Same `batch_get_stock_data()` as VCP (300 daily bars, Polygon.io REST API). `run_bo_scan()` (`runner.py:81`). |
 | **BO Auto Run** | Wizard: Pipeline=BO → Screener (Stage 2 pre-filter) → Force Include (optional) → `apply_gates=True` → run_daily. Skips EP gate select, identical to VCP flow. |
 | **BO Manual — Apply Gate** | Wizard: Pipeline=BO → Force Include paste → "Apply Gate" → BO structural gate → survivors to enrichment. |
 | **BO Manual — Run All Pasted** | Wizard: Pipeline=BO → Force Include paste → "Run all pasted" → skip gates → ALL pasted continue to enrichment. |
@@ -184,7 +185,7 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (BO)** | BO Structural Scanner | TradingView Stage 2 screener → force-include merge → batch OHLCV fetch → SPY RS line → Liquidity gate (ADV$ ≥ $10M) → BO setup detection (prior impulse, ADR envelope, VCI, MA stack, KDE pivot, higher lows, volume signature = dry-up + surge) → 3–5★ classification into buckets. | `scanners/bo/runner.py:81` |
+| **Agent 1 (BO)** | BO Structural Scanner | Polygon force-include merge → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $100M) → Liquidity gate (ADV$ ≥ $10M) → BO setup detection (prior impulse, ADR envelope, VCI, MA stack, KDE pivot, higher lows, volume signature = dry-up + surge) → 3–5★ classification into buckets. | `scanners/bo/runner.py:81` |
 | **Agent 2 (BO)** | BO Context Enrichment | Reuses VCP Tavily dual-query enrichment (`enrich_with_vcp_context`). Only 4–5★ survivors (or all pasted if Run All). | `agents/enrichment.py:246` |
 | **Agent 3 (BO)** | BO Final Report | Merge setup rating + context enrichment → apply down-only caps (reuse `apply_vcp_caps`) → sort final_rating desc → write ranked artifact. | `pipeline.py:execute_bo_enrichment` |
 
@@ -194,7 +195,7 @@ When a user pastes symbols, the pipeline resolves them in **three distinct Tradi
 |---|---|---|---|
 | **Prior Impulse** | ≥ 30% over 20–63d | ≥ 30% | < 30% |
 | **ADR20** | 4%–12% | 4%–12% | outside envelope |
-| **Base Duration** | 10–40d (optimal 15–25) | 10–40d | > 40d (stale) or absent |
+| **Base Duration** | 5–40d (optimal 15–25) | 5–40d | > 40d (stale) or absent |
 | **VCI** | ≤ 0.65 | ≤ 0.65 | > 0.65 |
 | **MA Stack / Surfing** | EMA10>EMA20, EMA50 slope > 0, close within 8% of EMA10 | aligned | not aligned or >8% extended |
 | **KDE Pivot** | in base upper quartile | in base upper quartile | absent |

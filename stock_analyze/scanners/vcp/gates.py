@@ -50,6 +50,27 @@ def passes_vcp_gate(rating: VcpStructuralRating) -> bool:
     return rating.structural_rating >= 4
 
 
+# ── Market-Cap Gate ──────────────────────────────────────────────
+
+MIN_MARKET_CAP = 100_000_000  # $100M — matches old TradingView screener pre-filter
+
+
+def passes_market_cap_gate(
+    market_cap: float | None,
+    min_mcap: float = MIN_MARKET_CAP,
+) -> bool:
+    """Post-screener replacement: market_cap >= $100M hard gate.
+
+    None / missing market_cap always rejects (conservative).
+    """
+    if market_cap is None:
+        return False
+    try:
+        return float(market_cap) >= min_mcap
+    except (TypeError, ValueError):
+        return False
+
+
 # ── Down-Only Caps ─────────────────────────────────────────────────
 
 

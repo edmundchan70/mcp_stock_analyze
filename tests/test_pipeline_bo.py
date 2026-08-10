@@ -11,6 +11,7 @@ from stock_analyze.pipeline import (
     RunConfig,
     execute_bo_enrichment,
     execute_bo_scan,
+    format_bo_near_miss_table,
     format_bo_rating_table,
     run_daily,
     sanitize_run_name,
@@ -32,6 +33,7 @@ def _make_rating_dict(rating: int = 5, symbol: str = "AAPL") -> dict:
         "ma_stack": True,
         "pivot_kde": True,
         "higher_lows": True,
+        "dryup": True,
         "volume_surge": True,
         "extension": False,
         "as_of": str(date.today()),
@@ -40,22 +42,27 @@ def _make_rating_dict(rating: int = 5, symbol: str = "AAPL") -> dict:
 
 class TestRunConfig:
     def test_run_config_bo_pipeline_type(self):
-        cfg = RunConfig(name="test", pipeline_type="daily_bo_scan")
+        cfg = RunConfig(name="test", pipeline_type="daily_bo_scan", force_keys=[("AAPL", "NASDAQ")])
         assert cfg.pipeline_type == "daily_bo_scan"
 
 
 class TestExecuteBoScan:
-    @patch("stock_analyze.pipeline.fetch_us_bo_universe")
+    @patch("stock_analyze.pipeline.resolve_force_symbol")
     @patch("stock_analyze.pipeline.run_bo_scan")
-    def test_execute_bo_scan_writes_payload(self, mock_scan, mock_screener):
-        mock_screener.return_value = [
-            {"name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ", "close": 150.0}
-        ]
+    def test_execute_bo_scan_writes_payload(self, mock_scan, mock_resolve):
+        mock_resolve.return_value = {
+            "name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ",
+            "market_cap": 800_000_000, "description": "Apple Inc.",
+        }
         from stock_analyze.models.bo import BoScanBucket
 
         mock_scan.return_value = BoScanBucket(counts={"5": 1, "4": 2, "3": 0}, count=3)
 
-        result = execute_bo_scan(limit=300, apply_gates=True)
+        result = execute_bo_scan(
+            force_keys=[("AAPL", "NASDAQ")],
+            limit=300,
+            apply_gates=True,
+        )
         assert "_counts" in result
         assert result["_counts"]["5"] == 1
 
@@ -65,8 +72,13 @@ class TestExecuteBoScan:
 
         mock_scan.return_value = BoScanBucket(counts={"5": 0, "4": 0, "3": 0}, count=0)
 
-        with pytest.raises(ValueError, match="non-empty force_keys"):
+        with pytest.raises(ValueError, match="force_keys"):
             execute_bo_scan(limit=300, use_screener=False, apply_gates=True)
+
+    @patch("stock_analyze.pipeline.run_bo_scan")
+    def test_execute_bo_scan_requires_force_keys(self, mock_scan):
+        with pytest.raises(ValueError, match="force_keys"):
+            execute_bo_scan(limit=300, apply_gates=True)
 
 
 class TestExecuteBoEnrichment:
@@ -153,8 +165,131 @@ class TestRunDailyBo:
                 pipeline_type="daily_bo_scan",
                 output_root=Path(tmpdir),
                 run_catalyst=True,
+                force_keys=[("AAPL", "NASDAQ")],
             )
             result = run_daily(cfg)
             assert result.exit_code == 0
             assert "agent1" in result.steps_completed
             assert "agent3" in result.steps_completed
+
+    @patch("stock_analyze.pipeline.execute_bo_scan")
+    def test_run_daily_bo_no_survivor_prints_near_miss(self, mock_scan):
+        """no 4-5★ survivors → short-circuit with only agent1, exit 0."""
+        mock_scan.return_value = {
+            "ratings": [_make_rating_dict(rating=3)],
+            "five_star": [], "four_star": [],
+            "three_star": [_make_rating_dict(rating=3)],
+            "near_miss": [
+                {
+                    "symbol": "TEST",
+                    "exchange": "NYSE",
+                    "variant": "classic",
+                    "rating": 3,
+                    "passed_essentials": [
+                        "prior_impulse", "adr20", "base_duration", "vci",
+                        "ma_stack", "pivot_kde", "higher_lows", "dryup",
+                    ],
+                    "failed_essentials": ["volume_surge"],
+                    "passed_count": 8,
+                    "failed_count": 1,
+                    "dryup_ratio": 0.4,
+                    "surge_pct": 120.0,
+                    "surfing_dist_pct": 2.0,
+                    "pivot": 150.0,
+                    "breakout_date": None,
+                    "rvol10": 0.0,
+                    "rs_rating": 85.0,
+                }
+            ],
+            "_counts": {"5": 0, "4": 0, "3": 1},
+            "count": 1,
+            "counts": {"5": 0, "4": 0, "3": 1},
+            "gates_applied": True,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = RunConfig(
+                name="bo-nosurvivor",
+                pipeline_type="daily_bo_scan",
+                output_root=Path(tmpdir),
+                run_catalyst=True,
+                force_keys=[("TEST", "NYSE")],
+            )
+            result = run_daily(cfg)
+            assert result.exit_code == 0
+            assert result.steps_completed == ["agent1"]
+
+
+class TestExecuteBoScanNearMiss:
+    @patch("stock_analyze.pipeline.resolve_force_symbol")
+    @patch("stock_analyze.pipeline.run_bo_scan")
+    def test_execute_bo_scan_payload_has_near_miss(self, mock_scan, mock_resolve):
+        """BO scan payload carries near_miss that survives strip_internal_keys."""
+        mock_resolve.return_value = {
+            "name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ",
+            "market_cap": 800_000_000, "description": "Apple Inc.",
+        }
+        from stock_analyze.models.bo import BoNearMiss, BoScanBucket
+
+        nm = BoNearMiss(
+            symbol="AAPL", exchange="NASDAQ", variant="classic",
+            passed_essentials=["prior_impulse", "adr20", "base_duration", "vci",
+                               "ma_stack", "pivot_kde", "higher_lows", "dryup"],
+            failed_essentials=["volume_surge"],
+            passed_count=8, failed_count=1,
+        )
+        bucket = BoScanBucket(
+            counts={"5": 0, "4": 0, "3": 1}, count=1,
+            near_miss=[nm],
+        )
+        mock_scan.return_value = bucket
+
+        result = execute_bo_scan(
+            force_keys=[("AAPL", "NASDAQ")],
+            limit=300,
+            apply_gates=True,
+        )
+        assert "near_miss" in result
+        assert len(result["near_miss"]) == 1
+
+        stripped = strip_internal_keys(result)
+        assert "near_miss" in stripped
+        assert "_counts" not in stripped
+
+
+class TestFormatBoNearMissTable:
+    def test_format_near_miss_table_empty(self):
+        assert format_bo_near_miss_table([]) == "(no near-miss stocks)"
+
+    def test_format_near_miss_table_with_data(self):
+        near = [
+            {
+                "symbol": "TEST",
+                "variant": "classic",
+                "failed_essentials": ["volume_surge"],
+                "rs_rating": 85.0,
+                "surge_pct": 120.0,
+            }
+        ]
+        table = format_bo_near_miss_table(near)
+        assert "TEST" in table
+        assert "volume_surge" in table
+
+
+class TestWizardWording:
+    def test_apply_gate_wording_bo_vs_ep(self):
+        """BO/VCP (structural=True) → 'structural gate'; EP (structural=False) → 'Baseline/Strict'."""
+        from unittest.mock import patch
+        from stock_analyze.interactive import _prompt_apply_gate_or_run_all
+
+        with patch("stock_analyze.interactive._select") as mock_select:
+            mock_select.return_value = "apply"
+            _prompt_apply_gate_or_run_all(structural=True)
+            choices = mock_select.call_args[0][1]
+            structural_label = choices[0].title
+            assert "structural gate" in structural_label
+
+            _prompt_apply_gate_or_run_all(structural=False)
+            choices2 = mock_select.call_args[0][1]
+            ep_label = choices2[0].title
+            assert "Baseline/Strict" in ep_label

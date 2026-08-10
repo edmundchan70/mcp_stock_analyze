@@ -1,6 +1,6 @@
 # BO Pipeline — Qullamaggie Breakout Setup Detector
 
-- **Purpose**: Pure-math detector for Kristjan Kullamägi "Qullamaggie Breakout" setups: stocks with extreme prior momentum (impulse ≥ 30% over 20–63d), a tightening 10–40d base (VCI ≤ 0.65), a KDE resistance pivot in the base's upper quartile, higher lows, and a breakout close above pivot with volume surge ≥ 1.5× baseline while price "surfs" the EMA10. Formatted exactly like the VCP pipeline (3 agents, wizard/CLI/pipeline integration identical).
+- **Purpose**: Pure-math detector for Kristjan Kullamägi "Qullamaggie Breakout" setups: stocks with extreme prior momentum (impulse ≥ 30% over 20–63d), a tightening 5–40d base (VCI ≤ 0.65), a KDE resistance pivot in the base's upper quartile, higher lows, and a breakout close above pivot with volume surge ≥ 1.5× baseline while price "surfs" the EMA10. Formatted exactly like the VCP pipeline (3 agents, wizard/CLI/pipeline integration identical).
 - **Key entry points**: `stock_analyze/cli.py` → `bo`/`bo-scan`/`bo-enrich` subcommands (`cli.py:100,106,112`), `stock_analyze/interactive.py` → "Daily BO scan" pipeline choice, `stock_analyze/pipeline.py` → `run_daily()` dispatches on `pipeline_type="daily_bo_scan"` → `_run_daily_bo()` (`pipeline.py:850`)
 - **Depends on**: `tradingview_screener`, `tvDatafeed`/`tradingview_data.batch_get_stock_data`, `pydantic`, `pandas`, `numpy`. Agent 2–3 reuses VCP's `agents/enrichment.py` (Tavily + OpenRouter) and VCP's `apply_vcp_caps`.
 - **Depended by**: wizard `_run_auto`/`_run_manual` (`interactive.py`), CLI handlers (`cli.py:268,301,324`), daily run dispatch (`pipeline.py:850`)
@@ -59,7 +59,7 @@ stock_analyze/
               │ S1 ADR20 ∈ [4%,12%] envelope │
               │ S2 prior impulse ≥30% + MA   │
               │    stack + EMA50 slope >0    │
-              │ S3 base 10–40d, VCI≤0.65,    │
+              │ S3 base 5–40d, VCI≤0.65,    │
               │    KDE pivot, higher lows≥1  │
               │ S4 close>pivot + surge≥1.5×  │
               └──────────────────────────────┘
@@ -101,7 +101,7 @@ stock_analyze/
 |---|---|---|
 | Prior impulse | max % gain over rolling 20–63d window ≥ 30% | `MIN_IMPULSE_PCT=30.0` |
 | ADR20 | 20d avg daily range % ∈ [4%, 12%] | `ADR_LO=4.0`, `ADR_HI=12.0` (gates.py) |
-| Base duration | 10–40 trading days | `BASE_MIN_DAYS=10`, `BASE_MAX_DAYS=40` |
+| Base duration | 5–40 trading days | `BASE_MIN_DAYS=5`, `BASE_MAX_DAYS=40` |
 | VCI | ATR5/ATR20 ≤ 0.65 + narrow 3-day range ≤ 0.6·ADR20 | `VCI_MAX=0.65` |
 | MA stack / surfing | EMA10>EMA20, EMA50 slope>0, close within 8% of EMA10 | `SURFING_MAX_PCT=8.0` |
 | KDE pivot | Gaussian KDE (bandwidth=3% price) over base peaks, mode in upper quartile | `bandwidth_pct=0.03` |
@@ -113,7 +113,7 @@ stock_analyze/
 
 - Returns `None` when `len(df) < MIN_BARS` (90) — need 63d impulse + 40d base + buffer.
 - Valid data but no base/breakout → 3★.
-- 9 "essential" booleans must ALL be true for >3★: `prior_impulse, adr20, base_duration, vci, ma_stack, pivot_kde, higher_lows, dryup, volume_surge` (volume signature is a dual condition — dry-up then surge).
+- 9 "essential" booleans must ALL be true for >3★: `prior_impulse, adr20, base_duration, vci, ma_stack, pivot_kde, higher_lows, dryup, volume_surge` (volume signature is a dual condition — dry-up then surge). Canonical ordering in `ESSENTIAL_KEYS`.
 - `extension=True` (close >8% above EMA10) clamps to 3★ regardless of other params (EC-01).
 - `lower_base` variant capped at 4★ (needs ≥1.5× surge). Only `classic` reaches 5★ (≥3× surge, or 4★→5★ when RS≥85).
 - RS (`benchmark`) is a boost, never a hard reject.
@@ -145,8 +145,9 @@ stock_analyze/
 | `BoBase` | `:11` | Single base: start/end idx, base_high/low, depth_pct, duration_days, KDE pivot, vci, dryup_ratio |
 | `BO_VARIANT` | `:25` | Literal["classic", "lower_base", "none"] |
 | `BO_LABELS` | `:27` | {3:"sub_standard", 4:"strong", 5:"textbook"} |
-| `BoSetupRating` | `:34` | 8 essential boolean params + dry-up + measured pct values + extension/sma50_extension_pct + meta (base/pivot/breakout/rvol10/rs_rating/as_of) + rating Literal[3,4,5] |
-| `BoScanBucket` | `:78` | Agent 1 envelope: ratings + five/four/three_star + counts + universe_source + gates_applied |
+| `BoSetupRating` | `:34` | 9 essential boolean params (incl. `dryup`) + measured pct values + extension/sma50_extension_pct + meta (base/pivot/breakout/rvol10/rs_rating/as_of) + rating Literal[3,4,5] |
+| `BoScanBucket` | `:78` | Agent 1 envelope: ratings + five/four/three_star + near_miss + counts + universe_source + gates_applied |
+| `BoNearMiss` | `:81` | 3★ near-miss snapshot: symbol, variant, passed/failed_essentials, measured values. Populated when ``apply_gates=True``, ≥7 of 9 essentials passed, not overextended. Sorted closest-first. |
 | `BoEnrichedBucket` | `:92` | Agent 2 output: list[VcpContextEnrichment] (reused schema) |
 | `BoRatedStock` | `:99` | setup + context merge, final_rating post-cap, cap_applied/cap_reason, error |
 | `BoRatedBucket` | `:133` | Agent 3 output sorted best→worst |
@@ -176,6 +177,8 @@ stock_analyze/
 | `score_bo_setup(df, benchmark, *, symbol, exchange, as_of)` | `:432` | Orchestrator → Optional[BoSetupRating] |
 | `screen_bucket(ratings)` | `:555` | → BoScanBucket |
 | `DRYUP_MAX` | `:35` | 0.5 — base-end volume / baseline ceiling for the dry-up half of the volume essential |
+| `ESSENTIAL_KEYS` | `:41` | Canonical list of 9 essential boolean field names for ``derive_near_miss`` |
+| `derive_near_miss(ratings, *, threshold)` | `:568` | Derive near-miss watchlist from 3★ ratings passing ≥``threshold`` essentials (default 7) |
 
 ### `stock_analyze/scanners/bo/gates.py`
 
@@ -202,6 +205,7 @@ stock_analyze/
 | `execute_bo_scan(...)` | `:338` | BO Agent 1: screener/force fetch + enrich_with_retry fallback → run_bo_scan → payload + `_counts` |
 | `execute_bo_enrichment(...)` | `:484` | BO Agents 2-3: reuse VCP enrichment → BoRatedBucket |
 | `format_bo_rating_table(...)` | `:528` | Plain-text table of rated stocks |
+| `format_bo_near_miss_table(...)` | `:530` | Plain-text near-miss watchlist for the no-4-5★ short-circuit |
 | `_run_daily_bo(...)` | `:671` | Full daily run: Agent1→enrich→rate→artifacts, mirrors `_run_daily_vcp` |
 | `run_daily()` dispatch | `:850` | `pipeline_type == "daily_bo_scan"` → `_run_daily_bo` |
 
@@ -287,8 +291,10 @@ Cost/timing mirror VCP (1 screener + 1 SPY + ~250 batch OHLCV + 30-60 Tavily + 1
 - **`lower_base` never reaches 5★**: two-base sequence (base B below base A's post-completion high, close above B's high but ≤ A's high×1.01) capped at 4★; `classic` needs ≥2× surge for 4★, ≥3× for 5★.
 - **`score_bo_setup` returns `None` for <90 bars** — dropped from bucket entirely (not rated 3★). Runner skips `None` ratings.
 - **RS is boost-only**: `rs_rating ≥ 85` bumps classic 4★→5★; low RS never rejects (research does not gate on RS).
-- **No 4–5★ survivors**: `_run_daily_bo` (`pipeline.py:721`) short-circuits to a completed run with only `agent1.json`, no enrichment.
+- **No 4–5★ survivors**: `_run_daily_bo` (`pipeline.py:721`) short-circuits to a completed run with only `agent1.json`, no enrichment. The near-miss watchlist (3★ ratings passing ≥7/9 essentials) is printed as a table before the short-circuit message.
 - **Down-only caps never boost**: reuse of `apply_vcp_caps` means context can only clamp ratings down.
+- **Near-miss computed only with gates**: when `apply_gates=False` (Run-all-pasted), `derive_near_miss` is not called (`runner.py`). Also `extension=True` excludes near-miss regardless of essential count.
+- **dryup persisted on BoSetupRating**: both `dryup: bool` and `dryup_ratio: float` are now saved fields (defaults `True`/`1.0` for test helpers).
 - **Duplicate merge priority**: screener rows beat force rows in `merge_bo_force_rows`.
 - **Force-include fallback chain**: symbols missed by the screener go through `enrich_with_retry()` (primary exchange + NASDAQ→NYSE→AMEX→BATS→CBOE); still-missing symbols recorded in `_failed_force` and printed in red — no interactive re-run.
 - **Batch OHLCV fallback**: if `batch_get_stock_data` import fails, runner falls back to per-symbol `get_stock_data` single fetches (`runner.py:131-143`).

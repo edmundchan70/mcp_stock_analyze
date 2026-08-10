@@ -7,6 +7,8 @@ import pytest
 from stock_analyze.data.screener import _is_us_listed, fetch_symbols
 from stock_analyze.data.symbols import row_symbol_key
 
+pytestmark = pytest.mark.screener
+
 
 # ── existing tests ──────────────────────────────────────────────────────
 

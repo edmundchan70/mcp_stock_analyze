@@ -24,6 +24,7 @@ class TestRunConfig:
             name="test",
             select="strict",
             pipeline_type="daily_vcp_scan",
+            force_keys=[("AAPL", "NASDAQ")],
         )
         assert cfg.pipeline_type == "daily_vcp_scan"
 
@@ -40,27 +41,36 @@ class TestSanitize:
 
 
 class TestExecuteVcpScan:
-    @patch("stock_analyze.pipeline.fetch_us_vcp_universe")
+    @patch("stock_analyze.pipeline.resolve_force_symbol")
     @patch("stock_analyze.pipeline.run_vcp_scan")
-    def test_execute_vcp_scan_writes_payload(self, mock_scan, mock_screener):
-        mock_screener.return_value = [
-            {"name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ", "close": 150.0}
-        ]
+    def test_execute_vcp_scan_writes_payload(self, mock_scan, mock_resolve):
+        mock_resolve.return_value = {
+            "name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ",
+            "market_cap": 800_000_000, "description": "Apple Inc.",
+        }
         from stock_analyze.models.vcp import VcpScanBucket
         mock_scan.return_value = VcpScanBucket(counts={"5": 1, "4": 2, "3": 0}, count=3)
 
-        result = execute_vcp_scan(limit=300, apply_gates=True)
+        result = execute_vcp_scan(
+            force_keys=[("AAPL", "NASDAQ")],
+            limit=300,
+            apply_gates=True,
+        )
         assert "_counts" in result
         assert result["_counts"]["5"] == 1
 
-    @patch("stock_analyze.pipeline.fetch_us_vcp_universe")
     @patch("stock_analyze.pipeline.run_vcp_scan")
-    def test_execute_vcp_scan_no_screener(self, mock_scan, mock_screener):
+    def test_execute_vcp_scan_no_screener(self, mock_scan):
         from stock_analyze.models.vcp import VcpScanBucket
         mock_scan.return_value = VcpScanBucket(counts={"5": 0, "4": 0, "3": 0}, count=0)
 
-        with pytest.raises(ValueError, match="non-empty force_keys"):
+        with pytest.raises(ValueError, match="force_keys"):
             execute_vcp_scan(limit=300, use_screener=False, apply_gates=True)
+
+    @patch("stock_analyze.pipeline.run_vcp_scan")
+    def test_execute_vcp_scan_requires_force_keys(self, mock_scan):
+        with pytest.raises(ValueError, match="force_keys"):
+            execute_vcp_scan(limit=300, apply_gates=True)
 
 
 class TestExecuteVcpEnrichment:
@@ -170,6 +180,7 @@ class TestRunDailyVcp:
                 pipeline_type="daily_vcp_scan",
                 output_root=Path(tmpdir),
                 run_catalyst=True,
+                force_keys=[("AAPL", "NASDAQ")],
             )
             result = run_daily(cfg)
             assert result.exit_code == 0
@@ -198,8 +209,7 @@ class TestRunDailyIntegration:
                 output_root=Path(tmpdir),
                 run_catalyst=False,
                 use_screener=False,
-                force_keys=[],
+                force_keys=[("AAPL", "NASDAQ")],
             )
-            # use_screener=False with empty force_keys raises ValueError
-            # must have force_keys or use_screener
-            pass
+            result = run_daily(cfg)
+            assert result.exit_code == 0

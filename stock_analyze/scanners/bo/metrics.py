@@ -20,7 +20,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from stock_analyze.models.bo import BO_LABELS, BoBase, BoScanBucket, BoSetupRating
+from stock_analyze.models.bo import BO_LABELS, BoBase, BoNearMiss, BoScanBucket, BoSetupRating
 from stock_analyze.scanners.bo.gates import passes_adr_envelope
 from stock_analyze.scanners.vcp.metrics import compute_rs_line, compute_rs_rating
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 MIN_IMPULSE_PCT = 30.0
 ADR_LO, ADR_HI = 4.0, 12.0
-BASE_MIN_DAYS, BASE_MAX_DAYS = 10, 40
+BASE_MIN_DAYS, BASE_MAX_DAYS = 5, 40
 VCI_MAX = 0.65
 SURFING_MAX_PCT = 8.0
 SURGE_MIN = 1.5
@@ -36,6 +36,14 @@ DRYUP_MAX = 0.5
 SURGE_STRONG = 2.0
 SURGE_TEXTBOOK = 3.0
 MIN_BARS = 90
+
+# Canonical ordering of the 9 essential boolean parameters persisted on
+# BoSetupRating.  ``derive_near_miss`` uses this list to build
+# ``passed_essentials`` / ``failed_essentials`` arrays.
+ESSENTIAL_KEYS = [
+    "prior_impulse", "adr20", "base_duration", "vci", "ma_stack",
+    "pivot_kde", "higher_lows", "dryup", "volume_surge",
+]
 
 
 # ── Stage 2: prior impulse ───────────────────────────────────────────
@@ -536,6 +544,8 @@ def score_bo_setup(
         pivot_kde=p_pivot,
         higher_lows=p_hl,
         higher_lows_count=hl_count,
+        dryup=p_dryup,
+        dryup_ratio=base.dryup_ratio if base else 1.0,
         volume_surge=p_surge,
         surge_pct=surge * 100.0,
         extension=extension,
@@ -552,6 +562,63 @@ def score_bo_setup(
     )
 
 
+def derive_near_miss(
+    ratings: list[BoSetupRating],
+    *,
+    threshold: int = 7,
+) -> list[BoNearMiss]:
+    """Derive near-miss watchlist from ratings that are 3★ but close.
+
+    Only considers ratings where ``rating == 3`` AND ``extension is False``
+    (overextended setups are not near-misses).  A rating qualifies when it
+    passed at least ``threshold`` of the 9 essentials (default 7, i.e. failed
+    ≤ 2).
+
+    The result is sorted closest-first: ``failed_count`` ascending, then
+    ``rs_rating`` descending (``None`` last), then ``symbol``.
+    """
+    near: list[BoNearMiss] = []
+    for r in ratings:
+        if r.rating != 3 or r.extension:
+            continue
+        flags: dict[str, bool] = {
+            "prior_impulse": r.prior_impulse,
+            "adr20": r.adr20,
+            "base_duration": r.base_duration,
+            "vci": r.vci,
+            "ma_stack": r.ma_stack,
+            "pivot_kde": r.pivot_kde,
+            "higher_lows": r.higher_lows,
+            "dryup": r.dryup,
+            "volume_surge": r.volume_surge,
+        }
+        passed = [k for k in ESSENTIAL_KEYS if flags.get(k, False)]
+        failed = [k for k in ESSENTIAL_KEYS if k not in passed]
+        if len(passed) < threshold:
+            continue
+        near.append(
+            BoNearMiss(
+                symbol=r.symbol,
+                exchange=r.exchange,
+                variant=r.variant,
+                rating=3,
+                passed_essentials=passed,
+                failed_essentials=failed,
+                passed_count=len(passed),
+                failed_count=len(failed),
+                dryup_ratio=r.dryup_ratio,
+                surge_pct=r.surge_pct,
+                surfing_dist_pct=r.surfing_dist_pct,
+                pivot=r.pivot,
+                breakout_date=r.breakout_date,
+                rvol10=r.rvol10,
+                rs_rating=r.rs_rating,
+            )
+        )
+    near.sort(key=lambda n: (n.failed_count, -(n.rs_rating if n.rs_rating is not None else -1.0), n.symbol))
+    return near
+
+
 def screen_bucket(ratings: list[BoSetupRating]) -> BoScanBucket:
     """Bucket scored setups into 5★ / 4★ / 3★ envelopes."""
     five = [r for r in ratings if r.rating == 5]
@@ -563,6 +630,7 @@ def screen_bucket(ratings: list[BoSetupRating]) -> BoScanBucket:
         five_star=five,
         four_star=four,
         three_star=three,
+        near_miss=derive_near_miss(ratings),
         count=len(ratings),
         counts={"5": len(five), "4": len(four), "3": len(three)},
     )

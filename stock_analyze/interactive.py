@@ -1,4 +1,4 @@
-"""Interactive Daily Run wizard (arrow-key menus via questionary)."""
+"""Interactive Daily Run wizard (arrow-key menus via questionary) — Paste-only Polygon.io."""
 
 from __future__ import annotations
 
@@ -59,47 +59,17 @@ def _format_keys(keys: list[SymbolKey]) -> str:
     return ", ".join(f"{exch}:{sym}" for sym, exch in keys)
 
 
-def _ask_repaste_or_skip(message: str) -> Optional[str]:
-    """Return 'repaste', 'skip', or None (cancelled)."""
-    return _select(
-        message,
-        [
-            Choice("Re-paste", value="repaste"),
-            Choice("Skip Force Include", value="skip"),
-        ],
-        default="repaste",
-    )
-
-
 def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
-    """Return (force_keys, cancelled). Skip → ([], False); cancel → (None, True)."""
-    value = _select(
-        "Force Include (optional)",
-        [
-            Choice("Skip", value="skip"),
-            Choice("Paste symbols…", value="paste"),
-        ],
-        default="skip",
-    )
-    if value is None:
-        return None, True
-    if value == "skip":
-        return [], False
-
+    """Return (force_keys, cancelled). Paste is mandatory post-migration."""
     while True:
         raw = _text(
-            "Paste tickers (e.g. ( JHX, KGC, LUNR, MB, ) — messy lists OK)",
+            "Paste tickers (e.g. AAPL, MSFT, TSLA — messy lists OK)",
             default="",
         )
         if raw is None:
             return None, True
         if not raw.strip():
-            questionary.print("Empty paste — try again or choose Skip.", style="bold fg:yellow")
-            again = _ask_repaste_or_skip("What next?")
-            if again is None:
-                return None, True
-            if again == "skip":
-                return [], False
+            questionary.print("Empty paste — please enter tickers.", style="bold fg:yellow")
             continue
 
         load_dotenv()
@@ -110,14 +80,9 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
             for err in result.errors:
                 questionary.print(f"  • {err}", style="fg:red")
             questionary.print(
-                "Fix the key / paste, or choose Skip.",
+                "Fix the key / paste and try again.",
                 style="bold fg:yellow",
             )
-            again = _ask_repaste_or_skip("What next?")
-            if again is None:
-                return None, True
-            if again == "skip":
-                return [], False
             continue
 
         if result.symbols:
@@ -126,7 +91,8 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
                 style="bold fg:green",
             )
         else:
-            questionary.print("Accepted: (none)", style="bold fg:yellow")
+            questionary.print("No symbols parsed — please try again.", style="bold fg:yellow")
+            continue
 
         if result.rejected:
             questionary.print(
@@ -135,16 +101,8 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
                 style="bold fg:yellow",
             )
 
-        if not result.symbols:
-            again = _ask_repaste_or_skip("Nothing usable parsed. What next?")
-            if again is None:
-                return None, True
-            if again == "skip":
-                return [], False
-            continue
-
         confirm = _select(
-            "Use this Force Include list?",
+            "Use this symbol list?",
             [
                 Choice("Yes — continue", value="yes"),
                 Choice("No — re-paste", value="no"),
@@ -155,21 +113,30 @@ def _prompt_force_include() -> tuple[Optional[list[SymbolKey]], bool]:
             return None, True
         if confirm == "yes":
             return result.symbols, False
-        # No → stay in paste loop (re-prompt text)
 
 
-def _prompt_apply_gate_or_run_all() -> Optional[bool]:
+def _prompt_apply_gate_or_run_all(*, structural: bool = False) -> Optional[bool]:
     """Manual paste path: Apply Gate filter vs Run all pasted.
 
     Returns True = Apply Gate filter, False = Run all pasted, None = cancelled.
+
+    When ``structural=True`` (BO/VCP pipelines), the apply label says
+    "structural gate (rating >= 4)"; EP keeps "Baseline/Strict".
     """
+    if structural:
+        apply_label = (
+            "Apply Gate filter — Fetch metrics, apply structural gate (rating >= 4), "
+            "only survivors continue"
+        )
+    else:
+        apply_label = (
+            "Apply Gate filter — Fetch metrics, apply Baseline/Strict, "
+            "only survivors continue"
+        )
     value = _select(
         "Apply Gate filter or Run all pasted?",
         [
-            Choice(
-                "Apply Gate filter — Fetch metrics, apply Baseline/Strict, only survivors continue",
-                value="apply",
-            ),
+            Choice(apply_label, value="apply"),
             Choice(
                 "Run all pasted — Fetch metrics for all pasted names, skip gates, continue all to Catalyst",
                 value="run_all",
@@ -237,10 +204,6 @@ def _run_auto() -> int:
     if cancelled:
         return 2
 
-    pasted = bool(force_keys)
-    use_screener = not pasted
-    apply_gates = True
-
     is_vcp = pipeline == "daily_vcp_scan"
     is_bo = pipeline == "daily_bo_scan"
     skips_ep_gate = is_vcp or is_bo
@@ -260,8 +223,8 @@ def _run_auto() -> int:
         run_catalyst=True,
         analysis_method="ep_rating" if not skips_ep_gate else None,
         force_keys=force_keys or None,
-        use_screener=use_screener,
-        apply_gates=apply_gates,
+        use_screener=False,
+        apply_gates=True,
         pipeline_type=pipeline,
         output_root=Path("output"),
     )
@@ -290,29 +253,19 @@ def _run_manual() -> int:
     if cancelled:
         return 2
 
-    pasted = bool(force_keys)
-    use_screener = not pasted
     apply_gates = True
     select: Optional[GateSelect]
 
-    if pasted:
-        apply_gates_choice = _prompt_apply_gate_or_run_all()
-        if apply_gates_choice is None:
+    apply_gates_choice = _prompt_apply_gate_or_run_all(structural=skips_ep_gate)
+    if apply_gates_choice is None:
+        return 2
+    apply_gates = apply_gates_choice
+    if apply_gates and not skips_ep_gate:
+        select = _prompt_gate()
+        if select is None:
             return 2
-        apply_gates = apply_gates_choice
-        if apply_gates and not skips_ep_gate:
-            select = _prompt_gate()
-            if select is None:
-                return 2
-        else:
-            select = "both"
     else:
-        if not skips_ep_gate:
-            select = _prompt_gate()
-            if select is None:
-                return 2
-        else:
-            select = "strict"
+        select = "both"
 
     run_catalyst: Optional[bool]
     analysis_method: Optional[AnalysisMethod]
@@ -348,7 +301,7 @@ def _run_manual() -> int:
             run_catalyst=run_catalyst,  # type: ignore[arg-type]
             analysis_method=analysis_method,
             force_keys=force_keys or None,
-            use_screener=use_screener,
+            use_screener=False,
             apply_gates=apply_gates,
             pipeline_type=pipeline,
             output_root=Path("output"),
@@ -361,7 +314,7 @@ def run_interactive() -> int:
     mode = _select(
         "How do you want to run?",
         [
-            Choice("Auto Run — Daily EP scan pipeline", value="auto"),
+            Choice("Auto Run — Paste-only pipeline", value="auto"),
             Choice("Manual Run — choose each step", value="manual"),
         ],
         default="auto",

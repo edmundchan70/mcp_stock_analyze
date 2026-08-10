@@ -1,4 +1,4 @@
-"""Daily Run pipeline — stamped Agent 1→2→3 chain (scheduler-ready)."""
+"""Daily Run pipeline — stamped Agent 1→2→3 chain (scheduler-ready, Polygon.io)."""
 
 from __future__ import annotations
 
@@ -16,14 +16,8 @@ from dotenv import load_dotenv
 from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
 from stock_analyze.agents.enrichment import enrich_with_vcp_context, load_vcp_stocks_from_input
 from stock_analyze.agents.rating import rate_ep_catalysts
-from stock_analyze.data.screener import (
-    fetch_symbols,
-    fetch_us_bo_universe,
-    fetch_us_ep_universe,
-    fetch_us_vcp_universe,
-)
-from stock_analyze.data.symbols import SymbolKey, row_symbol_key
-from stock_analyze.data.tradingview import enrich_with_retry
+from stock_analyze.data.polygon import resolve_force_symbol, to_ep_row
+from stock_analyze.data.symbols import SymbolKey
 from stock_analyze.models.catalyst import CatalystBucket
 from stock_analyze.models.bo import BoEnrichedBucket, BoRatedBucket, BoRatedStock, BoScanBucket
 from stock_analyze.models.rating import EpRatedStock, RatedBucket
@@ -67,7 +61,7 @@ class RunConfig:
     analysis_method: Optional[AnalysisMethod] = "ep_rating"
     limit: int = 300
     force_keys: Optional[list[SymbolKey]] = None
-    use_screener: bool = True
+    use_screener: bool = False   # always False post-migration
     apply_gates: bool = True
     output_root: Path = field(default_factory=lambda: Path("output"))
     min_rating: int = 4
@@ -98,100 +92,139 @@ def _write_meta(run_dir: Path, meta: dict[str, Any]) -> None:
     _write_json(run_dir / "run_meta.json", meta)
 
 
+def _resolve_symbols(
+    force_key_list: list[SymbolKey],
+    *,
+    on_stage: Optional[StageFn] = None,
+    on_ticker: Optional[TickerFn] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Resolve paste-only symbols via Polygon Ticker Details.
+
+    Returns (resolved_rows, failed_force).
+    """
+    if on_stage is not None:
+        on_stage("resolving symbols (Polygon)")
+
+    resolved: list[dict[str, Any]] = []
+    failed_force: list[dict[str, str]] = []
+    total = len(force_key_list)
+
+    for i, (sym, exch) in enumerate(force_key_list, start=1):
+        details = resolve_force_symbol(sym)
+        if details is None:
+            logger.warning("Polygon: symbol resolution failed for %s", sym)
+            failed_force.append({
+                "symbol": sym.upper(),
+                "exchange": exch.upper(),
+                "errors": ["Symbol not found in Polygon"],
+            })
+        else:
+            resolved.append(details)
+        if on_ticker is not None:
+            on_ticker(i, total, sym.upper(), "resolving")
+
+    return resolved, failed_force
+
+
 def execute_ep_scan(
     *,
     force_keys: Optional[Sequence[SymbolKey]] = None,
     select: GateSelect,
     limit: int,
-    use_screener: bool = True,
+    use_screener: bool = False,
     apply_gates: bool = True,
     on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
 ) -> dict[str, Any]:
-    """Run Agent 1 and return selected JSON payload.
+    """Run EP Agent 1 with paste-only Polygon symbols.
 
-    Always attaches ``_counts`` (baseline/strict) for CLI logging; callers that
-    persist the payload should strip it via :func:`strip_internal_keys`.
-
-    When ``use_screener`` is False, the Universe is only ``force_keys`` (paste-only).
-
-    When ``on_stage`` is given, it is called with a short description before
-    each major step so a Run Progress reporter can show Agent 1 substeps.
+    Always attaches ``_counts`` (baseline/strict) for CLI logging.
     """
     force_key_list: list[SymbolKey] = list(force_keys or [])
-    if not use_screener and not force_key_list:
-        raise ValueError("use_screener=False requires non-empty force_keys")
+    if not force_key_list:
+        raise ValueError("EP scan requires non-empty force_keys (paste-only)")
 
-    if use_screener:
-        if on_stage is not None:
-            on_stage("fetching universe (screener)")
-        try:
-            screener_rows = fetch_us_ep_universe(
-                min_price=BASELINE.min_price,
-                min_gap_pct=BASELINE.min_gap_pct,
-                min_rvol10=BASELINE.min_rvol10,
-                limit=limit,
-            )
-        except Exception as exc:
-            logger.warning("Screener fetch failed: %s — continuing with force-only universe", exc)
-            screener_rows = []
-    else:
-        screener_rows = []
+    # Resolve symbols via Polygon
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(force_key_list), "Resolving symbols", throttle=1)
+    resolved, failed_force = _resolve_symbols(
+        force_key_list,
+        on_stage=on_stage,
+        on_ticker=batch_progress.ticker if batch_progress is not None else None,
+    )
+    if batch_progress is not None:
+        batch_progress.end_ticker()
 
-    force_rows: list = []
-    failed_force: list[dict[str, str]] = []
-    if force_key_list:
-        if on_stage is not None:
-            on_stage("fetching force symbols")
+    if not resolved:
+        payload: dict[str, Any] = {
+            "baseline": {"count": 0, "stocks": []},
+            "strict": {"count": 0, "stocks": []},
+            "_counts": {"baseline": 0, "strict": 0},
+        }
+        if failed_force:
+            payload["_failed_force"] = failed_force
+        return payload
+
+    # Build EP rows for each resolved symbol: combine ticker details + OHLCV-derived metrics
+    if on_stage is not None:
+        on_stage("computing EP metrics (Polygon OHLCV)")
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(resolved), "EP metrics", throttle=1)
+
+    ep_rows: list[dict[str, Any]] = []
+    for i, detail in enumerate(resolved, start=1):
+        symbol = detail.get("symbol", "")
+        if not symbol:
+            continue
         try:
-            force_rows = fetch_symbols(force_key_list)
+            ohlcv_row = to_ep_row(symbol)
+            # Merge: ticker details win for name/exchange/market_cap; OHLCV for metrics
+            row = {
+                "name": detail.get("name", f"POLYGON:{symbol}"),
+                "symbol": symbol,
+                "exchange": detail.get("exchange", "NASDAQ"),
+                "close": ohlcv_row.get("close"),
+                "open": ohlcv_row.get("open"),
+                "prior_close": ohlcv_row.get("prior_close"),
+                "gap": ohlcv_row.get("gap"),
+                "volume": ohlcv_row.get("volume"),
+                "relative_volume_10d_calc": ohlcv_row.get("relative_volume_10d_calc"),
+                "Value.Traded": ohlcv_row.get("Value.Traded"),
+                "avg_dollar_volume_50d": ohlcv_row.get("avg_dollar_volume_50d"),
+                "market_cap_basic": detail.get("market_cap"),
+                "market_cap": detail.get("market_cap"),
+                "description": detail.get("description", ""),
+            }
+            ep_rows.append(row)
         except Exception as exc:
-            logger.warning("Force-symbol fetch failed: %s — falling back to OHLCV enrichment", exc)
-            force_rows = []
-        found_keys = {row_symbol_key(r) for r in force_rows}
-        missing = [(s, e) for s, e in force_key_list if (s, e) not in found_keys]
-        total_missing = len(missing)
-        for enrich_idx, (sym, exch) in enumerate(missing, start=1):
-            logger.info(
-                "[%d/%d] enriching %s:%s — screener missed, trying OHLCV...",
-                enrich_idx,
-                total_missing,
-                exch,
-                sym,
-            )
-            t0 = time.perf_counter()
-            result = enrich_with_retry(sym, exch)
-            elapsed_s = time.perf_counter() - t0
-            if result.ok:
-                logger.info(
-                    "[%d/%d] enrich %s:%s — ok (%.1fs)",
-                    enrich_idx,
-                    total_missing,
-                    exch,
-                    sym,
-                    elapsed_s,
-                )
-                force_rows.append(result.row)
-            else:
-                logger.warning(
-                    "[%d/%d] enrich %s:%s — FAIL (%.1fs)\n  errors: %s",
-                    enrich_idx,
-                    total_missing,
-                    exch,
-                    sym,
-                    elapsed_s,
-                    result.errors,
-                )
-                failed_force.append({
-                    "symbol": sym.upper(),
-                    "exchange": exch.upper(),
-                    "errors": result.errors,
-                })
+            logger.warning("EP row build failed for %s: %s", symbol, exc)
+            failed_force.append({
+                "symbol": symbol.upper(),
+                "exchange": detail.get("exchange", "NASDAQ"),
+                "errors": [str(exc)],
+            })
+        if batch_progress is not None:
+            batch_progress.ticker(i, len(resolved), symbol.upper(), "computing")
+
+    if batch_progress is not None:
+        batch_progress.end_ticker()
+
+    if not ep_rows:
+        payload = {
+            "baseline": {"count": 0, "stocks": []},
+            "strict": {"count": 0, "stocks": []},
+            "_counts": {"baseline": 0, "strict": 0},
+        }
+        if failed_force:
+            payload["_failed_force"] = failed_force
+        return payload
 
     if on_stage is not None:
-        on_stage("running scan")
-    rows, force_set, source = merge_force_rows(screener_rows, force_key_list, force_rows)
+        on_stage("running EP scan")
+
+    _, force_set, source = merge_force_rows([], force_key_list, ep_rows)
     result = run_ep_scan(
-        rows=rows,
+        rows=ep_rows,
         as_of=date.today(),
         force_keys=force_set,
         universe_source=source,
@@ -249,71 +282,42 @@ def execute_vcp_scan(
     *,
     force_keys: Optional[Sequence[SymbolKey]] = None,
     limit: int = 300,
-    use_screener: bool = True,
+    use_screener: bool = False,
     apply_gates: bool = True,
     on_stage: Optional[StageFn] = None,
     batch_progress: Any = None,
 ) -> dict[str, Any]:
-    """Run VCP Agent 1 and return scan bucket payload.
-
-    Always attaches ``_counts`` (5/4/3★) for CLI logging; callers that
-    persist the payload should strip it via :func:`strip_internal_keys`.
+    """Run VCP Agent 1 with paste-only Polygon symbols.
 
     Args:
         batch_progress: Optional RunProgress for live batch OHLCV ticker.
     """
     force_key_list: list[SymbolKey] = list(force_keys or [])
-    if not use_screener and not force_key_list:
-        raise ValueError("use_screener=False requires non-empty force_keys")
+    if not force_key_list:
+        raise ValueError("VCP scan requires non-empty force_keys (paste-only)")
 
-    if use_screener:
-        if on_stage is not None:
-            on_stage("fetching VCP universe (screener)")
-        try:
-            screener_rows = fetch_us_vcp_universe(limit=limit)
-        except Exception as exc:
-            logger.warning("VCP screener fetch failed: %s — continuing with force-only", exc)
-            screener_rows = []
-    else:
-        screener_rows = []
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(force_key_list), "Resolving symbols", throttle=1)
+    resolved, failed_force = _resolve_symbols(
+        force_key_list,
+        on_stage=on_stage,
+        on_ticker=batch_progress.ticker if batch_progress is not None else None,
+    )
+    if batch_progress is not None:
+        batch_progress.end_ticker()
 
-    force_rows_result: list = []
-    failed_force: list[dict[str, str]] = []
-    if force_key_list:
-        if on_stage is not None:
-            on_stage("fetching force symbols")
-        try:
-            force_rows_result = fetch_symbols(force_key_list, limit=200)
-        except Exception as exc:
-            logger.warning("Force-symbol fetch failed: %s", exc)
-            force_rows_result = []
-        found_keys = {row_symbol_key(r) for r in force_rows_result}
-        missing = [(s, e) for s, e in force_key_list if (s, e) not in found_keys]
-        total_missing = len(missing)
-        for enrich_idx, (sym, exch) in enumerate(missing, start=1):
-            logger.info(
-                "[%d/%d] enriching %s:%s — screener missed, trying OHLCV...",
-                enrich_idx, total_missing, exch, sym,
-            )
-            t0 = time.perf_counter()
-            result = enrich_with_retry(sym, exch)
-            elapsed_s = time.perf_counter() - t0
-            if result.ok:
-                logger.info(
-                    "[%d/%d] enrich %s:%s — ok (%.1fs)",
-                    enrich_idx, total_missing, exch, sym, elapsed_s,
-                )
-                force_rows_result.append(result.row)
-            else:
-                logger.warning(
-                    "[%d/%d] enrich %s:%s — FAIL (%.1fs)\n  errors: %s",
-                    enrich_idx, total_missing, exch, sym, elapsed_s, result.errors,
-                )
-                failed_force.append({
-                    "symbol": sym.upper(),
-                    "exchange": exch.upper(),
-                    "errors": result.errors,
-                })
+    if not resolved:
+        payload: dict[str, Any] = {
+            "ratings": [],
+            "five_star": [], "four_star": [], "three_star": [],
+            "count": 0,
+            "counts": {"5": 0, "4": 0, "3": 0},
+            "universe_source": "force",
+            "gates_applied": apply_gates,
+        }
+        if failed_force:
+            payload["_failed_force"] = failed_force
+        return payload
 
     if on_stage is not None:
         on_stage("running VCP scan")
@@ -321,10 +325,10 @@ def execute_vcp_scan(
     force_set = {(s.upper(), e.upper()) for s, e in force_key_list}
 
     bucket = run_vcp_scan(
-        screener_rows=screener_rows,
+        screener_rows=[],
         force_keys=force_set,
-        force_rows=force_rows_result,
-        universe_source="hybrid" if screener_rows and force_key_list else ("screener" if screener_rows else "force"),
+        force_rows=resolved,
+        universe_source="force",
         apply_gates=apply_gates,
         batch_progress=batch_progress,
     )
@@ -339,71 +343,42 @@ def execute_bo_scan(
     *,
     force_keys: Optional[Sequence[SymbolKey]] = None,
     limit: int = 300,
-    use_screener: bool = True,
+    use_screener: bool = False,
     apply_gates: bool = True,
     on_stage: Optional[StageFn] = None,
     batch_progress: Any = None,
 ) -> dict[str, Any]:
-    """Run Qullamaggie BO Agent 1 and return scan bucket payload.
-
-    Always attaches ``_counts`` (5/4/3★) for CLI logging; callers that
-    persist the payload should strip it via :func:`strip_internal_keys`.
+    """Run Qullamaggie BO Agent 1 with paste-only Polygon symbols.
 
     Args:
         batch_progress: Optional RunProgress for live batch OHLCV ticker.
     """
     force_key_list: list[SymbolKey] = list(force_keys or [])
-    if not use_screener and not force_key_list:
-        raise ValueError("use_screener=False requires non-empty force_keys")
+    if not force_key_list:
+        raise ValueError("BO scan requires non-empty force_keys (paste-only)")
 
-    if use_screener:
-        if on_stage is not None:
-            on_stage("fetching BO universe (screener)")
-        try:
-            screener_rows = fetch_us_bo_universe(limit=limit)
-        except Exception as exc:
-            logger.warning("BO screener fetch failed: %s — continuing with force-only", exc)
-            screener_rows = []
-    else:
-        screener_rows = []
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(force_key_list), "Resolving symbols", throttle=1)
+    resolved, failed_force = _resolve_symbols(
+        force_key_list,
+        on_stage=on_stage,
+        on_ticker=batch_progress.ticker if batch_progress is not None else None,
+    )
+    if batch_progress is not None:
+        batch_progress.end_ticker()
 
-    force_rows_result: list = []
-    failed_force: list[dict[str, str]] = []
-    if force_key_list:
-        if on_stage is not None:
-            on_stage("fetching force symbols")
-        try:
-            force_rows_result = fetch_symbols(force_key_list, limit=200)
-        except Exception as exc:
-            logger.warning("Force-symbol fetch failed: %s", exc)
-            force_rows_result = []
-        found_keys = {row_symbol_key(r) for r in force_rows_result}
-        missing = [(s, e) for s, e in force_key_list if (s, e) not in found_keys]
-        total_missing = len(missing)
-        for enrich_idx, (sym, exch) in enumerate(missing, start=1):
-            logger.info(
-                "[%d/%d] enriching %s:%s — screener missed, trying OHLCV...",
-                enrich_idx, total_missing, exch, sym,
-            )
-            t0 = time.perf_counter()
-            result = enrich_with_retry(sym, exch)
-            elapsed_s = time.perf_counter() - t0
-            if result.ok:
-                logger.info(
-                    "[%d/%d] enrich %s:%s — ok (%.1fs)",
-                    enrich_idx, total_missing, exch, sym, elapsed_s,
-                )
-                force_rows_result.append(result.row)
-            else:
-                logger.warning(
-                    "[%d/%d] enrich %s:%s — FAIL (%.1fs)\n  errors: %s",
-                    enrich_idx, total_missing, exch, sym, elapsed_s, result.errors,
-                )
-                failed_force.append({
-                    "symbol": sym.upper(),
-                    "exchange": exch.upper(),
-                    "errors": result.errors,
-                })
+    if not resolved:
+        payload: dict[str, Any] = {
+            "ratings": [],
+            "five_star": [], "four_star": [], "three_star": [],
+            "count": 0,
+            "counts": {"5": 0, "4": 0, "3": 0},
+            "universe_source": "force",
+            "gates_applied": apply_gates,
+        }
+        if failed_force:
+            payload["_failed_force"] = failed_force
+        return payload
 
     if on_stage is not None:
         on_stage("running BO scan")
@@ -411,10 +386,10 @@ def execute_bo_scan(
     force_set = {(s.upper(), e.upper()) for s, e in force_key_list}
 
     bucket = run_bo_scan(
-        screener_rows=screener_rows,
+        screener_rows=[],
         force_keys=force_set,
-        force_rows=force_rows_result,
-        universe_source="hybrid" if screener_rows and force_key_list else ("screener" if screener_rows else "force"),
+        force_rows=resolved,
+        universe_source="force",
         apply_gates=apply_gates,
         batch_progress=batch_progress,
     )
@@ -430,19 +405,14 @@ def execute_vcp_enrichment(
     *,
     on_ticker: Optional[TickerFn] = None,
 ) -> dict[str, Any]:
-    """Run VCP Agent 2 (context enrichment) and Agent 3 (final rating).
-
-    Returns VCP rated bucket payload.
-    """
+    """Run VCP Agent 2 (context enrichment) and Agent 3 (final rating)."""
     load_dotenv()
 
-    # Agent 2: Context enrichment
     enriched = enrich_with_vcp_context(stocks, on_ticker=on_ticker)
     enriched_payload = VcpEnrichedBucket(
         count=len(enriched), stocks=enriched,
     ).model_dump(mode="json")
 
-    # Agent 3: Final rating with caps
     rated: list[VcpRatedStock] = []
     for structural, context in zip(stocks, enriched):
         if isinstance(structural, dict):
@@ -453,7 +423,6 @@ def execute_vcp_enrichment(
         rated_stock = build_rated_stock(structural_model, context)
         rated.append(rated_stock)
 
-    # Sort best→worst
     rated.sort(key=lambda r: (-r.final_rating, r.symbol))
 
     rated_payload = VcpRatedBucket(
@@ -486,32 +455,24 @@ def execute_bo_enrichment(
     *,
     on_ticker: Optional[TickerFn] = None,
 ) -> dict[str, Any]:
-    """Run BO Agent 2 (context enrichment) and Agent 3 (final rating).
-
-    Reuses the VCP context enrichment agent as-is; only the rated-stock
-    merge is BO-specific.
-    """
+    """Run BO Agent 2 (context enrichment) and Agent 3 (final rating)."""
     load_dotenv()
 
-    # Agent 2: Context enrichment (reuses VCP enrichment agent)
     enriched = enrich_with_vcp_context(stocks, on_ticker=on_ticker)
     enriched_payload = BoEnrichedBucket(
         count=len(enriched), stocks=enriched,
     ).model_dump(mode="json")
 
-    # Agent 3: Final rating with caps
     rated: list[BoRatedStock] = []
     for setup, context in zip(stocks, enriched):
         if isinstance(setup, dict):
             from stock_analyze.models.bo import BoSetupRating
-
             setup_model = BoSetupRating(**setup)
         else:
             setup_model = setup
         rated_stock = build_bo_rated_stock(setup_model, context)
         rated.append(rated_stock)
 
-    # Sort best→worst
     rated.sort(key=lambda r: (-r.final_rating, r.symbol))
 
     rated_payload = BoRatedBucket(
@@ -539,6 +500,22 @@ def format_bo_rating_table(stocks: list[BoRatedStock], *, min_rating: int = 4) -
     return "\n".join(lines)
 
 
+def format_bo_near_miss_table(near_miss: list[dict[str, Any]]) -> str:
+    """Plain-text near-miss watchlist table for the no-4-5★ short-circuit."""
+    if not near_miss:
+        return "(no near-miss stocks)"
+    lines = ["symbol   variant      failed  rs    surge"]
+    for n in near_miss:
+        rs = n.get("rs_rating")
+        rs_str = f"{rs:.0f}" if rs is not None else "—"
+        lines.append(
+            f"{n.get('symbol',''):<8} {n.get('variant',''):<12} "
+            f"{','.join(n.get('failed_essentials',[])):<20} {rs_str:<4} "
+            f"{n.get('surge_pct',0):.0f}%"
+        )
+    return "\n".join(lines)
+
+
 def _run_daily_vcp(
     *,
     config: RunConfig,
@@ -551,10 +528,11 @@ def _run_daily_vcp(
 ) -> RunResult:
     """Run the VCP pipeline: Agent 1 (scan) → Agent 2 (enrichment) → Agent 3 (final)."""
     try:
+        t0 = time.perf_counter()
         agent1_raw = execute_vcp_scan(
             force_keys=force_keys or None,
             limit=config.limit,
-            use_screener=config.use_screener,
+            use_screener=False,
             apply_gates=config.apply_gates,
             on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
             batch_progress=reporter,
@@ -572,19 +550,18 @@ def _run_daily_vcp(
         )
         if failed_force:
             agent1_done_msg += f" [red]⚠ {len(failed_force)} force-include failed[/red]"
+        agent1_done_msg += f" — {time.perf_counter() - t0:.0f}s"
         reporter.stage_done(agent1_done_msg)
         if failed_force:
             reporter.console.print(
-                "\n[bold yellow]Force-include symbols could not be enriched after retries "
-                "on all exchanges:[/bold yellow]"
+                "\n[bold yellow]Force-include symbols could not be resolved via Polygon:[/bold yellow]"
             )
             for f in failed_force:
                 reporter.console.print(
-                    f"  • [red]{f['symbol']}[/red] (tried {f['exchange']} + fallbacks)"
+                    f"  • [red]{f['symbol']}[/red]"
                 )
 
         ratings = agent1.get("ratings") or agent1.get("stocks") or []
-        # Get passing stocks (4-5★) for enrichment
         passing = [
             r for r in ratings
             if r.get("structural_rating", 0) >= 4
@@ -611,6 +588,7 @@ def _run_daily_vcp(
 
         reporter.stage(f"VCP Enrichment — researching ({len(passing)} symbols)")
         reporter.begin_ticker(len(passing), "VCP Context")
+        t1 = time.perf_counter()
 
         enrichment_result = execute_vcp_enrichment(passing, on_ticker=reporter.ticker)
         reporter.end_ticker()
@@ -623,7 +601,10 @@ def _run_daily_vcp(
         _write_json(agent2_path, agent2)
         steps.append("agent2")
         _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
-        reporter.stage_done(f"VCP Context done (count={agent2.get('count')})")
+        reporter.stage_done(
+            f"VCP Context done (count={agent2.get('count')}) — {time.perf_counter() - t1:.0f}s"
+        )
+        t2 = time.perf_counter()
 
         agent3_path = run_dir / f"{name}_agent3.json"
         _write_json(agent3_path, agent3)
@@ -632,7 +613,8 @@ def _run_daily_vcp(
         matches_4 = sum(1 for s in rated if s.final_rating >= 4)
         reporter.stage_done(
             f"VCP Final Rating done "
-            f"(count={agent3.get('count')}, 5★={matches_5}, 4★={matches_4})"
+            f"(count={agent3.get('count')}, 5★={matches_5}, 4★={matches_4}) "
+            f"— {time.perf_counter() - t2:.0f}s"
         )
 
         vcp_table = format_vcp_rating_table(rated, min_rating=config.min_rating)
@@ -680,10 +662,11 @@ def _run_daily_bo(
 ) -> RunResult:
     """Run the BO pipeline: Agent 1 (scan) → Agent 2 (enrichment) → Agent 3 (final)."""
     try:
+        t0 = time.perf_counter()
         agent1_raw = execute_bo_scan(
             force_keys=force_keys or None,
             limit=config.limit,
-            use_screener=config.use_screener,
+            use_screener=False,
             apply_gates=config.apply_gates,
             on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
             batch_progress=reporter,
@@ -701,24 +684,27 @@ def _run_daily_bo(
         )
         if failed_force:
             agent1_done_msg += f" [red]⚠ {len(failed_force)} force-include failed[/red]"
+        agent1_done_msg += f" — {time.perf_counter() - t0:.0f}s"
         reporter.stage_done(agent1_done_msg)
         if failed_force:
             reporter.console.print(
-                "\n[bold yellow]Force-include symbols could not be enriched after retries "
-                "on all exchanges:[/bold yellow]"
+                "\n[bold yellow]Force-include symbols could not be resolved via Polygon:[/bold yellow]"
             )
             for f in failed_force:
                 reporter.console.print(
-                    f"  • [red]{f['symbol']}[/red] (tried {f['exchange']} + fallbacks)"
+                    f"  • [red]{f['symbol']}[/red]"
                 )
 
         ratings = agent1.get("ratings") or agent1.get("stocks") or []
-        # Get passing stocks (4-5★) for enrichment
         passing = [
             r for r in ratings
             if r.get("rating", 0) >= 4
         ]
         if not passing:
+            near_miss_raw = agent1_raw.get("near_miss") or agent1.get("near_miss") or []
+            if near_miss_raw:
+                nm_table = format_bo_near_miss_table(near_miss_raw)
+                reporter.console.print(nm_table)
             meta.update(
                 status="completed",
                 finished_at=datetime.now(timezone.utc).isoformat(),
@@ -740,6 +726,7 @@ def _run_daily_bo(
 
         reporter.stage(f"BO Enrichment — researching ({len(passing)} symbols)")
         reporter.begin_ticker(len(passing), "BO Context")
+        t1 = time.perf_counter()
 
         enrichment_result = execute_bo_enrichment(passing, on_ticker=reporter.ticker)
         reporter.end_ticker()
@@ -752,7 +739,10 @@ def _run_daily_bo(
         _write_json(agent2_path, agent2)
         steps.append("agent2")
         _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
-        reporter.stage_done(f"BO Context done (count={agent2.get('count')})")
+        reporter.stage_done(
+            f"BO Context done (count={agent2.get('count')}) — {time.perf_counter() - t1:.0f}s"
+        )
+        t2 = time.perf_counter()
 
         agent3_path = run_dir / f"{name}_agent3.json"
         _write_json(agent3_path, agent3)
@@ -761,7 +751,8 @@ def _run_daily_bo(
         matches_4 = sum(1 for s in rated if s.final_rating >= 4)
         reporter.stage_done(
             f"BO Final Rating done "
-            f"(count={agent3.get('count')}, 5★={matches_5}, 4★={matches_4})"
+            f"(count={agent3.get('count')}, 5★={matches_5}, 4★={matches_4}) "
+            f"— {time.perf_counter() - t2:.0f}s"
         )
 
         bo_table = format_bo_rating_table(rated, min_rating=config.min_rating)
@@ -805,8 +796,8 @@ def run_daily(
     try:
         name = sanitize_run_name(config.name)
         force_keys = list(config.force_keys or [])
-        if not config.use_screener and not force_keys:
-            raise ValueError("use_screener=False requires non-empty force_keys")
+        if not force_keys:
+            raise ValueError("Paste-only pipeline requires non-empty force_keys")
         stamped = RunConfig(
             name=name,
             select=config.select,
@@ -814,7 +805,7 @@ def run_daily(
             analysis_method=config.analysis_method,
             limit=config.limit,
             force_keys=force_keys or None,
-            use_screener=config.use_screener,
+            use_screener=False,
             apply_gates=config.apply_gates,
             output_root=config.output_root,
             min_rating=config.min_rating,
@@ -834,7 +825,7 @@ def run_daily(
         "select": config.select,
         "run_catalyst": config.run_catalyst,
         "analysis_method": config.analysis_method,
-        "use_screener": config.use_screener,
+        "use_screener": False,
         "apply_gates": config.apply_gates,
         "force_include_count": len(force_keys),
         "started_at": started,
@@ -870,14 +861,16 @@ def run_daily(
                 reporter=reporter,
             )
 
-        # ── EP Pipeline (existing) ──────────────────────────────
+        # ── EP Pipeline ─────────────────────────────────────────
+        t0 = time.perf_counter()
         agent1_raw = execute_ep_scan(
             force_keys=force_keys or None,
             select=config.select,
             limit=config.limit,
-            use_screener=config.use_screener,
+            use_screener=False,
             apply_gates=config.apply_gates,
             on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
+            batch_progress=reporter,
         )
         agent1 = strip_internal_keys(agent1_raw)
         agent1_path = run_dir / f"{name}_agent1.json"
@@ -892,18 +885,18 @@ def run_daily(
         )
         if failed_force:
             agent1_done_msg += f" [red]⚠ {len(failed_force)} force-include failed[/red]"
+        agent1_done_msg += f" — {time.perf_counter() - t0:.0f}s"
         reporter.stage_done(agent1_done_msg)
         if failed_force:
             reporter.console.print(
-                "\n[bold yellow]Force-include symbols could not be enriched after retries "
-                "on all exchanges:[/bold yellow]"
+                "\n[bold yellow]Force-include symbols could not be resolved via Polygon:[/bold yellow]"
             )
             for f in failed_force:
                 reporter.console.print(
-                    f"  • [red]{f['symbol']}[/red] (tried {f['exchange']} + fallbacks)"
+                    f"  • [red]{f['symbol']}[/red]"
                 )
             reporter.console.print(
-                "\n[italic]To resolve: check the ticker/exchange, correct them, "
+                "\n[italic]To resolve: check the ticker, correct it, "
                 "then re-run the pipeline with the corrected symbols "
                 "using `python -m stock_analyze ep --force` or the interactive wizard.[/italic]\n"
             )
@@ -921,6 +914,7 @@ def run_daily(
         stocks = load_stocks_from_input(agent1, select=config.select)
         reporter.stage(f"Catalyst — searching news ({len(stocks)} symbols)")
         reporter.begin_ticker(len(stocks), "Catalyst")
+        t1 = time.perf_counter()
         agent2 = execute_catalyst_enrich(stocks, on_ticker=reporter.ticker)
         reporter.end_ticker()
         agent2_path = run_dir / f"{name}_agent2.json"
@@ -929,7 +923,8 @@ def run_daily(
         _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
         found = sum(1 for s in agent2.get("stocks") or [] if s.get("catalyst_found"))
         reporter.stage_done(
-            f"Catalyst done (count={agent2.get('count')}, catalyst_found={found})"
+            f"Catalyst done (count={agent2.get('count')}, catalyst_found={found}) "
+            f"— {time.perf_counter() - t1:.0f}s"
         )
 
         if config.analysis_method != "ep_rating":
@@ -945,6 +940,7 @@ def run_daily(
         rated_stocks_in = load_stocks_from_input(agent2, select=config.select)
         reporter.stage(f"EP Rating — rating ({len(rated_stocks_in)} symbols)")
         reporter.begin_ticker(len(rated_stocks_in), "EP Rating")
+        t2 = time.perf_counter()
         agent3, rated = execute_ep_rating(rated_stocks_in, on_ticker=reporter.ticker)
         reporter.end_ticker()
         agent3_path = run_dir / f"{name}_agent3.json"
@@ -952,7 +948,8 @@ def run_daily(
         steps.append("agent3")
         matches = sum(1 for s in rated if s.ep_catalyst_match)
         reporter.stage_done(
-            f"EP Rating done (count={agent3.get('count')}, ep_catalyst_match={matches})"
+            f"EP Rating done (count={agent3.get('count')}, ep_catalyst_match={matches}) "
+            f"— {time.perf_counter() - t2:.0f}s"
         )
         rating_table = build_rating_table(rated, min_rating=config.min_rating)
         if rating_table is not None:

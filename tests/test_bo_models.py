@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from stock_analyze.models.bo import (
     BoBase,
     BoEnrichedBucket,
+    BoNearMiss,
     BoRatedBucket,
     BoRatedStock,
     BoScanBucket,
@@ -33,7 +34,7 @@ class TestBoBase:
         assert b.duration_days == 20
 
     def test_bo_base_duration_bounds(self):
-        """10-40d bases valid; model itself does not constrain duration."""
+        """5-40d bases valid; model itself does not constrain duration."""
         b = BoBase(
             start_idx=0, end_idx=59, base_high=100.0, base_low=90.0,
             depth_pct=10.0, duration_days=60, pivot=99.0, vci=0.5,
@@ -222,3 +223,42 @@ class TestBoBuckets:
     def test_bo_enriched_bucket(self):
         bucket = BoEnrichedBucket(count=0)
         assert bucket.model_dump(mode="json")["count"] == 0
+
+
+class TestBoNearMiss:
+    def test_bo_near_miss_valid(self):
+        nm = BoNearMiss(
+            symbol="TEST",
+            exchange="NYSE",
+            variant="classic",
+            rating=3,
+            passed_essentials=["prior_impulse", "adr20", "base_duration", "vci",
+                               "ma_stack", "pivot_kde", "higher_lows", "dryup"],
+            failed_essentials=["volume_surge"],
+            passed_count=8,
+            failed_count=1,
+            dryup_ratio=0.4,
+            surge_pct=120.0,
+            surfing_dist_pct=2.0,
+            pivot=150.0,
+            rvol10=2.5,
+            rs_rating=85.0,
+        )
+        assert nm.symbol == "TEST"
+        assert nm.rating == 3
+        assert nm.passed_count == 8
+        assert nm.failed_count == 1
+        assert nm.failed_essentials == ["volume_surge"]
+
+    def test_bo_near_miss_defaults(self):
+        nm = BoNearMiss(symbol="A", exchange="NASDAQ")
+        assert nm.variant == "none"
+        assert nm.passed_essentials == []
+        assert nm.failed_essentials == []
+        assert nm.passed_count == 0
+        assert nm.failed_count == 0
+        assert nm.rs_rating is None
+
+    def test_bo_near_miss_rating_literal(self):
+        with pytest.raises(ValidationError):
+            BoNearMiss(symbol="A", exchange="NASDAQ", rating=4)  # only 3 allowed

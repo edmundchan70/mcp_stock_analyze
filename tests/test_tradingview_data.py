@@ -9,6 +9,8 @@ import pytest
 from stock_analyze.data.symbols import US_EXCHANGE_FALLBACK_ORDER
 from stock_analyze.data.tradingview import EnrichResult, _try_enrich_single, enrich_with_retry
 
+pytestmark = pytest.mark.screener
+
 
 # ── US_EXCHANGE_FALLBACK_ORDER ────────────────────────────────────────
 

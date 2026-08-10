@@ -8,8 +8,12 @@ import logging
 from pathlib import Path
 from typing import Literal, Optional
 
+import questionary
+
 from stock_analyze.agents.catalyst import load_stocks_from_input
 from stock_analyze.agents.enrichment import load_vcp_stocks_from_input
+from stock_analyze.data.symbols import SymbolKey
+from stock_analyze.force_include import parse_force_include_text
 from stock_analyze.pipeline import (
     execute_bo_enrichment,
     execute_bo_scan,
@@ -26,9 +30,63 @@ from stock_analyze.pipeline import (
 
 logger = logging.getLogger(__name__)
 
+_QUESTIONARY_STYLE = questionary.Style(
+    [
+        ("qmark", "fg:cyan bold"),
+        ("question", "bold"),
+        ("answer", "fg:cyan"),
+        ("pointer", "fg:cyan bold"),
+        ("highlighted", "fg:cyan bold"),
+    ]
+)
+
+
+def _prompt_force_keys() -> Optional[list[SymbolKey]]:
+    """Prompt user to paste a symbol list; parse via force_include."""
+    from dotenv import load_dotenv
+
+    while True:
+        raw = questionary.text(
+            "Paste tickers (e.g. AAPL, MSFT, TSLA — messy lists OK)",
+            style=_QUESTIONARY_STYLE,
+        ).ask()
+        if raw is None:
+            return None
+        if not raw.strip():
+            questionary.print("Empty paste — please enter tickers.", style="bold fg:yellow")
+            continue
+
+        load_dotenv()
+        result = parse_force_include_text(raw)
+
+        if result.errors:
+            questionary.print("Parse errors:", style="bold fg:red")
+            for err in result.errors:
+                questionary.print(f"  • {err}", style="fg:red")
+            continue
+
+        if not result.symbols:
+            questionary.print("No symbols parsed. Try again.", style="bold fg:yellow")
+            continue
+
+        questionary.print(
+            f"Parsed {len(result.symbols)} symbols.", style="bold fg:green",
+        )
+        confirm = questionary.select(
+            "Use this list?",
+            choices=[
+                questionary.Choice("Yes", value="yes"),
+                questionary.Choice("Re-paste", value="no"),
+            ],
+            default="yes",
+            style=_QUESTIONARY_STYLE,
+        ).ask()
+        if confirm == "yes":
+            return result.symbols
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Stock analyze scanners")
+    parser = argparse.ArgumentParser(description="Stock analyze scanners (Polygon.io)")
     sub = parser.add_subparsers(dest="command", required=False)
 
     ep = sub.add_parser("ep", help="Episodic Pivot Agent 1 technical filter")
@@ -39,7 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="both",
         help="Which bucket(s) to include in output JSON (both computed always)",
     )
-    ep.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    ep.add_argument("--limit", type=int, default=300, help="Max rows (historic compat)")
+    ep.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols (e.g. AAPL,MSFT). Prompted if omitted.",
+    )
     ep.add_argument("-v", "--verbose", action="store_true")
 
     cat = sub.add_parser("catalyst", help="Agent 2 catalyst intelligence (Tavily + OpenRouter)")
@@ -74,13 +136,21 @@ def build_parser() -> argparse.ArgumentParser:
     # VCP pipeline subcommands
     vcp = sub.add_parser("vcp", help="VCP full pipeline (scan + enrich + rate)")
     vcp.add_argument("--out", type=str, default=None, help="Write JSON to this path")
-    vcp.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    vcp.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    vcp.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
     vcp.add_argument("--no-gates", action="store_true", help="Skip Stage 2 + VCP gate filtering")
     vcp.add_argument("-v", "--verbose", action="store_true")
 
     vcp_scan = sub.add_parser("vcp-scan", help="VCP Agent 1 structural scan only")
     vcp_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
-    vcp_scan.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    vcp_scan.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    vcp_scan.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
     vcp_scan.add_argument("--no-gates", action="store_true", help="Skip gate filtering")
     vcp_scan.add_argument("-v", "--verbose", action="store_true")
 
@@ -99,13 +169,21 @@ def build_parser() -> argparse.ArgumentParser:
     # BO pipeline subcommands
     bo = sub.add_parser("bo", help="BO full pipeline (scan + enrich + rate)")
     bo.add_argument("--out", type=str, default=None, help="Write JSON to this path")
-    bo.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    bo.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    bo.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
     bo.add_argument("--no-gates", action="store_true", help="Skip BO gate filtering")
     bo.add_argument("-v", "--verbose", action="store_true")
 
     bo_scan = sub.add_parser("bo-scan", help="BO Agent 1 structural scan only")
     bo_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
-    bo_scan.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    bo_scan.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    bo_scan.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
     bo_scan.add_argument("--no-gates", action="store_true", help="Skip gate filtering")
     bo_scan.add_argument("-v", "--verbose", action="store_true")
 
@@ -124,13 +202,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_force_arg(force_arg: Optional[str]) -> Optional[list[SymbolKey]]:
+    """Parse --force comma-separated string into SymbolKeys, or prompt."""
+    if force_arg and force_arg.strip():
+        from dotenv import load_dotenv
+        load_dotenv()
+        result = parse_force_include_text(force_arg)
+        return result.symbols
+    return _prompt_force_keys()
+
+
 def run_ep_command(
     *,
     out_path: Optional[str],
     select: Literal["baseline", "strict", "both"],
     limit: int,
+    force_arg: Optional[str] = None,
 ) -> int:
-    raw = execute_ep_scan(select=select, limit=limit)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_ep_scan(force_keys=force_keys, select=select, limit=limit)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -192,9 +285,14 @@ def run_vcp_command(
     out_path: Optional[str],
     limit: int,
     apply_gates: bool = True,
+    force_arg: Optional[str] = None,
 ) -> int:
     """Run full VCP pipeline: scan + enrichment."""
-    raw = execute_vcp_scan(limit=limit, apply_gates=apply_gates)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_vcp_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -208,7 +306,6 @@ def run_vcp_command(
     else:
         print(text)
 
-    # Also run enrichment on passing stocks
     ratings = payload.get("ratings") or []
     passing = [r for r in ratings if r.get("structural_rating", 0) >= 4]
     if passing:
@@ -225,9 +322,14 @@ def run_vcp_scan_command(
     out_path: Optional[str],
     limit: int,
     apply_gates: bool = True,
+    force_arg: Optional[str] = None,
 ) -> int:
     """Run VCP Agent 1 structural scan only."""
-    raw = execute_vcp_scan(limit=limit, apply_gates=apply_gates)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_vcp_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -270,9 +372,14 @@ def run_bo_command(
     out_path: Optional[str],
     limit: int,
     apply_gates: bool = True,
+    force_arg: Optional[str] = None,
 ) -> int:
     """Run full BO pipeline: scan + enrichment."""
-    raw = execute_bo_scan(limit=limit, apply_gates=apply_gates)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_bo_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -286,7 +393,6 @@ def run_bo_command(
     else:
         print(text)
 
-    # Also run enrichment on passing stocks
     ratings = payload.get("ratings") or []
     passing = [r for r in ratings if r.get("rating", 0) >= 4]
     if passing:
@@ -303,9 +409,14 @@ def run_bo_scan_command(
     out_path: Optional[str],
     limit: int,
     apply_gates: bool = True,
+    force_arg: Optional[str] = None,
 ) -> int:
     """Run BO Agent 1 structural scan only."""
-    raw = execute_bo_scan(limit=limit, apply_gates=apply_gates)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_bo_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
     counts = raw.get("_counts") or {}
     payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
@@ -350,7 +461,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(levelname)s %(message)s",
     )
-    for _name in ("httpx", "httpcore", "openai", "urllib3", "tavily"):
+    for _name in ("httpx", "httpcore", "openai", "urllib3", "tavily", "polygon"):
         if not getattr(args, "verbose", False):
             logging.getLogger(_name).setLevel(logging.WARNING)
 
@@ -365,6 +476,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 out_path=args.out,
                 select=args.select,
                 limit=args.limit,
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("EP scan failed: %s", exc)
@@ -397,6 +509,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 out_path=args.out,
                 limit=args.limit,
                 apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("VCP pipeline failed: %s", exc)
@@ -408,6 +521,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 out_path=args.out,
                 limit=args.limit,
                 apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("VCP scan failed: %s", exc)
@@ -430,6 +544,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 out_path=args.out,
                 limit=args.limit,
                 apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("BO pipeline failed: %s", exc)
@@ -441,6 +556,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 out_path=args.out,
                 limit=args.limit,
                 apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("BO scan failed: %s", exc)

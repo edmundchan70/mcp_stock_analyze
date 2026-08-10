@@ -156,6 +156,8 @@ def _make_openrouter_parser(
         content = resp.choices[0].message.content or ""
         result = _parse_llm_json(content, symbol=symbol, exchange=exchange)
         logger.debug("LLM VCP enrich — %s: %.1fs", symbol, elapsed_s)
+        if elapsed_s > 10:
+            logger.warning("LLM VCP enrich — %s took %.1fs", symbol, elapsed_s)
         return result
 
     return parse

@@ -48,6 +48,16 @@ class TestBoSubcommands:
         )
         assert args.min_rating == 3
 
+    def test_bo_accepts_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["bo", "--force", "AAPL,MSFT,TSLA"])
+        assert args.force == "AAPL,MSFT,TSLA"
+
+    def test_bo_scan_accepts_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["bo-scan", "--force", "AAPL,MSFT"])
+        assert args.force == "AAPL,MSFT"
+
     def test_bo_enrich_default_min_rating(self):
         parser = build_parser()
         args = parser.parse_args(["bo-enrich", "--in", "test.json"])

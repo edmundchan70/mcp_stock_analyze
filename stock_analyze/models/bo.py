@@ -1,7 +1,7 @@
 """BO pipeline schemas — Qullamaggie breakout setup structural + contextual."""
 
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,8 @@ class BoSetupRating(BaseModel):
     pivot_kde: bool = Field(description="Gaussian KDE pivot found in base upper quartile")
     higher_lows: bool = Field(description="Consecutive higher lows (S_HL >= 1) into pivot")
     higher_lows_count: int = Field(default=0, description="Measured higher-lows count")
+    dryup: bool = Field(default=True, description="Base-end volume dry-up <= 0.5x baseline")
+    dryup_ratio: float = Field(default=1.0, description="Measured base-end volume / baseline ratio")
     volume_surge: bool = Field(description="Breakout volume surge >= 1.5x baseline")
     surge_pct: float = Field(default=0.0, description="Measured breakout volume surge %")
     extension: bool = Field(description="True when close > 8% above EMA10 (overextended)")
@@ -75,6 +77,32 @@ class BoSetupRating(BaseModel):
     as_of: date = Field(default_factory=date.today)
 
 
+class BoNearMiss(BaseModel):
+    """A 3★ rating that passed at least 7 of 9 essentials (near-miss watchlist).
+
+    Only computed when ``apply_gates=True``.  Excludes overextended setups.
+    Self-contained snapshot; sorted closest-first (failed_count asc, rs_rating desc, None last).
+    """
+
+    symbol: str
+    exchange: str
+    variant: BO_VARIANT = "none"
+    rating: Literal[3] = 3
+
+    passed_essentials: list[str] = Field(default_factory=list)
+    failed_essentials: list[str] = Field(default_factory=list)
+    passed_count: int = 0
+    failed_count: int = 0
+
+    dryup_ratio: float = 1.0
+    surge_pct: float = 0.0
+    surfing_dist_pct: float = 0.0
+    pivot: float = 0.0
+    breakout_date: Optional[date] = None
+    rvol10: float = 0.0
+    rs_rating: Optional[float] = None
+
+
 # --- Bucket envelopes ---
 
 
@@ -88,6 +116,7 @@ class BoScanBucket(BaseModel):
     five_star: list[BoSetupRating] = Field(default_factory=list)
     four_star: list[BoSetupRating] = Field(default_factory=list)
     three_star: list[BoSetupRating] = Field(default_factory=list)
+    near_miss: list[BoNearMiss] = Field(default_factory=list)
     count: int = 0
     counts: dict[str, int] = Field(default_factory=lambda: {"5": 0, "4": 0, "3": 0})
 
@@ -145,6 +174,7 @@ __all__ = [
     "BO_VARIANT",
     "BoBase",
     "BoEnrichedBucket",
+    "BoNearMiss",
     "BoRatedBucket",
     "BoRatedStock",
     "BoScanBucket",

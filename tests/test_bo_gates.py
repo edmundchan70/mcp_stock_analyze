@@ -13,6 +13,7 @@ from stock_analyze.scanners.bo.gates import (
     build_bo_rated_stock,
     passes_adr_envelope,
     passes_bo_gate,
+    passes_market_cap_gate,
 )
 from stock_analyze.scanners.vcp.gates import compute_adv_dollar, passes_liquidity_gate
 
@@ -31,6 +32,7 @@ def _make_rating(rating: int = 4, variant: str = "classic", **kwargs) -> BoSetup
         ma_stack=True,
         pivot_kde=True,
         higher_lows=True,
+        dryup=True,
         volume_surge=True,
         extension=False,
         as_of=date.today(),
@@ -204,3 +206,23 @@ class TestBuildBoRatedStock:
         ctx.error = "Tavily down"
         stock = build_bo_rated_stock(setup, ctx)
         assert stock.error == "Tavily down"
+
+
+# ── Market-Cap Gate (reused from VCP gates) ─────────────────────
+
+
+class TestMarketCapGate:
+    def test_passes_above_threshold(self):
+        assert passes_market_cap_gate(500_000_000) is True
+
+    def test_passes_at_threshold(self):
+        assert passes_market_cap_gate(100_000_000) is True
+
+    def test_rejects_below_threshold(self):
+        assert passes_market_cap_gate(99_999_999) is False
+
+    def test_rejects_none(self):
+        assert passes_market_cap_gate(None) is False
+
+    def test_rejects_zero(self):
+        assert passes_market_cap_gate(0) is False

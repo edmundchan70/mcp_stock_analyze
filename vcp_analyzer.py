@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import agent-safe functions
-from tradingview_data import get_stock_data_for_agent, get_stock_data_dict
+from stock_analyze.data.polygon import get_stock_data_for_agent, get_stock_data_dict
 from vcp_scan import analyze_vcp_for_agent
 
 # Import Pydantic models

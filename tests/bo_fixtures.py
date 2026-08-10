@@ -289,6 +289,10 @@ def make_scenario(kind: str) -> pd.DataFrame:
         "stale_base": lambda: _make_bo_series(base_duration=60, decay=False, breakout_surge=3.0),
         "low_impulse": lambda: _make_bo_series(impulse_pct=15.0),
         "high_adr": lambda: _make_bo_series(adr_pct=14.0),
+        "short_base": lambda: _make_bo_series(base_duration=6, breakout_surge=3.0, impulse_bars=80),
+        "six_of_nine": lambda: _make_bo_series(
+            impulse_pct=15.0, adr_pct=14.0, volume_dryup=0.8, breakout_surge=3.0,
+        ),
         "vshape": _make_vshape_series,
         "downtrend": _make_downtrend_overhead_series,
     }

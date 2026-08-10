@@ -11,6 +11,7 @@ from stock_analyze.models.vcp import (
 from stock_analyze.scanners.vcp.gates import (
     passes_stage2_gate,
     passes_vcp_gate,
+    passes_market_cap_gate,
     apply_vcp_caps,
     build_rated_stock,
 )
@@ -186,3 +187,29 @@ class TestDownOnlyCaps:
         assert rated.sector == "Technology"
         assert rated.is_category_leader is True
         assert rated.cap_applied is False
+
+
+# ── Market-Cap Gate ────────────────────────────────────────────
+
+
+class TestMarketCapGate:
+    def test_passes_above_threshold(self):
+        assert passes_market_cap_gate(500_000_000) is True
+
+    def test_passes_at_threshold(self):
+        assert passes_market_cap_gate(100_000_000) is True
+
+    def test_rejects_below_threshold(self):
+        assert passes_market_cap_gate(99_999_999) is False
+
+    def test_rejects_zero(self):
+        assert passes_market_cap_gate(0) is False
+
+    def test_rejects_none(self):
+        assert passes_market_cap_gate(None) is False
+
+    def test_rejects_negative(self):
+        assert passes_market_cap_gate(-1_000_000) is False
+
+    def test_rejects_unparseable(self):
+        assert passes_market_cap_gate("n/a") is False

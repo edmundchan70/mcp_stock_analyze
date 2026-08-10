@@ -235,6 +235,8 @@ def _make_openrouter_summarizer(
         content = resp.choices[0].message.content or ""
         result = _parse_llm_json(content, symbol=symbol)
         logger.debug("LLM catalyst — %s: %.1fs", symbol, elapsed_s)
+        if elapsed_s > 10:
+            logger.warning("LLM catalyst — %s took %.1fs", symbol, elapsed_s)
         return result
 
     return summarize

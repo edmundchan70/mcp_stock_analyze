@@ -49,6 +49,16 @@ class TestVcpSubcommands:
         )
         assert args.min_rating == 3
 
+    def test_vcp_accepts_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["vcp", "--force", "AAPL,MSFT,TSLA"])
+        assert args.force == "AAPL,MSFT,TSLA"
+
+    def test_vcp_scan_accepts_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["vcp-scan", "--force", "AAPL,MSFT"])
+        assert args.force == "AAPL,MSFT"
+
     def test_default_command_none_when_no_args(self):
         parser = build_parser()
         args = parser.parse_args([])

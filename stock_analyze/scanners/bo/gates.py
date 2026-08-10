@@ -4,7 +4,12 @@ from typing import Optional
 
 from stock_analyze.models.bo import BO_LABELS, BoRatedStock, BoSetupRating
 from stock_analyze.models.vcp import VcpContextEnrichment
-from stock_analyze.scanners.vcp.gates import apply_vcp_caps, passes_liquidity_gate
+from stock_analyze.scanners.vcp.gates import (
+    MIN_MARKET_CAP,
+    apply_vcp_caps,
+    passes_liquidity_gate,
+    passes_market_cap_gate,
+)
 
 ADR_LO = 4.0
 ADR_HI = 12.0
@@ -59,8 +64,10 @@ def build_bo_rated_stock(
 __all__ = [
     "ADR_HI",
     "ADR_LO",
+    "MIN_MARKET_CAP",
     "build_bo_rated_stock",
     "passes_adr_envelope",
     "passes_bo_gate",
     "passes_liquidity_gate",
+    "passes_market_cap_gate",
 ]

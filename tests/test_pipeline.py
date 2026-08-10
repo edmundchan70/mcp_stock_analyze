@@ -28,7 +28,7 @@ def test_create_run_dir_stamps_date_time_and_name(tmp_path: Path, monkeypatch: p
     fixed = datetime(2026, 8, 9, 15, 30, 45)
     monkeypatch.setattr("stock_analyze.pipeline._now", lambda: fixed)
 
-    cfg = RunConfig(name="daily", select="strict", output_root=tmp_path)
+    cfg = RunConfig(name="daily", select="strict", output_root=tmp_path, force_keys=[("AAPL", "NASDAQ")])
     run_dir = create_run_dir(cfg)
 
     assert run_dir == tmp_path / "2026-08-09" / "153045_daily"
@@ -70,6 +70,7 @@ def test_run_daily_writes_agent1_only_when_catalyst_skipped(
         run_catalyst=False,
         analysis_method=None,
         output_root=tmp_path,
+        force_keys=[("AAPL", "NASDAQ")],
     )
     result = run_daily(cfg)
 
@@ -155,6 +156,7 @@ def test_run_daily_full_chain_writes_all_agent_files(
         run_catalyst=True,
         analysis_method="ep_rating",
         output_root=tmp_path,
+        force_keys=[("AAPL", "NASDAQ")],
     )
     result = run_daily(cfg)
 
@@ -182,13 +184,13 @@ def test_run_daily_passes_force_keys_to_execute_ep_scan(
 
     monkeypatch.setattr("stock_analyze.pipeline.execute_ep_scan", fake_scan)
 
-    keys = [("JHX", "NYSE"), ("KGC", "NYSE")]
+    keys = [("AAPL", "NASDAQ")]
     cfg = RunConfig(
         name="force",
         select="strict",
         run_catalyst=False,
         analysis_method=None,
-        force_keys=keys,
+        force_keys=[("AAPL", "NASDAQ")],
         output_root=tmp_path,
     )
     result = run_daily(cfg)
@@ -196,32 +198,28 @@ def test_run_daily_passes_force_keys_to_execute_ep_scan(
     assert result.exit_code == 0
     assert seen.get("force_keys") == keys
     meta = json.loads((result.run_dir / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["force_include_count"] == 2
+    assert meta["force_include_count"] == 1
 
 
 def test_execute_ep_scan_paste_only_skips_screener(monkeypatch: pytest.MonkeyPatch):
-    """use_screener=False → no screener call; universe is force keys only."""
-    called = {"screener": False}
-
-    def boom_screener(**kwargs):
-        called["screener"] = True
-        raise AssertionError("screener must not run when use_screener=False")
-
-    force_row = {
-        "name": "NYSE:JHX",
-        "close": 25.0,
-        "gap": 9.0,
-        "relative_volume_10d_calc": 4.0,
-        "market_cap_basic": 800_000_000,
-        "Value.Traded": 30_000_000,
-        "average_volume_60d_calc": 400_000,
-    }
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", boom_screener)
+    """Paste-only: force_keys → Polygon resolved, no screener call."""
     monkeypatch.setattr(
-        "stock_analyze.pipeline.fetch_symbols",
-        lambda keys: [force_row],
+        "stock_analyze.pipeline.resolve_force_symbol",
+        lambda sym: {
+            "name": f"NYSE:{sym}",
+            "symbol": sym,
+            "exchange": "NYSE",
+            "market_cap": 800_000_000,
+            "description": f"{sym} Inc.",
+        },
     )
+    fake_ohlcv = {
+        "name": "NYSE:JHX", "symbol": "JHX", "exchange": "NYSE",
+        "close": 25.0, "open": 25.0, "prior_close": 22.73,
+        "volume": 1000000, "relative_volume_10d_calc": 4.0,
+        "Value.Traded": 30000000, "avg_dollar_volume_50d": 5000000,
+    }
+    monkeypatch.setattr("stock_analyze.pipeline.to_ep_row", lambda sym: fake_ohlcv)
 
     payload = execute_ep_scan(
         force_keys=[("JHX", "NYSE")],
@@ -231,11 +229,9 @@ def test_execute_ep_scan_paste_only_skips_screener(monkeypatch: pytest.MonkeyPat
         apply_gates=True,
     )
 
-    assert called["screener"] is False
     assert payload["universe_source"] == "force"
     assert payload["strict"]["count"] == 1
     assert payload["strict"]["stocks"][0]["symbol"] == "JHX"
-    assert payload["strict"]["stocks"][0]["force_included"] is True
 
 
 def test_execute_ep_scan_use_screener_false_requires_force_keys():
@@ -249,21 +245,23 @@ def test_execute_ep_scan_use_screener_false_requires_force_keys():
 
 
 def test_execute_ep_scan_apply_gates_false_keeps_weak_names(monkeypatch: pytest.MonkeyPatch):
-    weak_row = {
-        "name": "NASDAQ:WEAK",
-        "close": 5.0,
-        "gap": 5.0,
-        "relative_volume_10d_calc": 2.0,
-        "market_cap_basic": 50_000_000,
-        "Value.Traded": 1_000_000,
-        "average_volume_60d_calc": 100_000,
-    }
-
     monkeypatch.setattr(
-        "stock_analyze.pipeline.fetch_us_ep_universe",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("no screener")),
+        "stock_analyze.pipeline.resolve_force_symbol",
+        lambda sym: {
+            "name": f"NASDAQ:{sym}",
+            "symbol": sym,
+            "exchange": "NASDAQ",
+            "market_cap": 50_000_000,
+            "description": f"{sym} Inc.",
+        },
     )
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda keys: [weak_row])
+    fake_ohlcv = {
+        "name": "NASDAQ:WEAK", "symbol": "WEAK", "exchange": "NASDAQ",
+        "close": 5.0, "open": 4.8, "prior_close": 4.57,
+        "gap": 5.0, "volume": 1000000, "relative_volume_10d_calc": 2.0,
+        "Value.Traded": 1000000, "avg_dollar_volume_50d": 500000,
+    }
+    monkeypatch.setattr("stock_analyze.pipeline.to_ep_row", lambda sym: fake_ohlcv)
 
     payload = execute_ep_scan(
         force_keys=[("WEAK", "NASDAQ")],
@@ -278,31 +276,10 @@ def test_execute_ep_scan_apply_gates_false_keeps_weak_names(monkeypatch: pytest.
     assert payload["baseline"]["count"] == 1
 
 
-def test_execute_ep_scan_skip_path_still_calls_screener(monkeypatch: pytest.MonkeyPatch):
-    """No force_keys → screener still used (Skip Force Include path)."""
-    called = {"screener": False}
-
-    def fake_screener(**kwargs):
-        called["screener"] = True
-        return [
-            {
-                "name": "NASDAQ:NVDA",
-                "close": 125.0,
-                "gap": 11.0,
-                "relative_volume_10d_calc": 4.0,
-                "market_cap_basic": 800_000_000,
-                "Value.Traded": 100_000_000,
-                "average_volume_60d_calc": 1_000_000,
-            }
-        ]
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", fake_screener)
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda keys: [])
-
-    payload = execute_ep_scan(select="strict", limit=300)
-
-    assert called["screener"] is True
-    assert payload["universe_source"] == "screener"
+def test_execute_ep_scan_empty_force_keys_raises():
+    """No force_keys → ValueError (paste-only)."""
+    with pytest.raises(ValueError, match="force_keys"):
+        execute_ep_scan(select="strict", limit=300)
 
 
 def test_run_daily_records_use_screener_and_apply_gates_meta(
@@ -324,7 +301,7 @@ def test_run_daily_records_use_screener_and_apply_gates_meta(
         select="strict",
         run_catalyst=False,
         analysis_method=None,
-        force_keys=[("JHX", "NYSE")],
+        force_keys=[("AAPL", "NASDAQ")],
         use_screener=False,
         apply_gates=False,
         output_root=tmp_path,
@@ -361,6 +338,7 @@ def test_run_daily_failure_keeps_agent1_and_marks_failed(
         run_catalyst=True,
         analysis_method="ep_rating",
         output_root=tmp_path,
+        force_keys=[("AAPL", "NASDAQ")],
     )
     result = run_daily(cfg)
 
@@ -379,35 +357,32 @@ def test_run_daily_failure_keeps_agent1_and_marks_failed(
 
 
 def test_execute_ep_scan_survives_force_fetch_timeout(monkeypatch):
-    """fetch_symbols raises, enrich_from_ohlcv returns a valid row → run
-    completes with the stock present (regression for "fails hard")."""
+    """resolve_force_symbol succeeds, to_ep_row returns a valid row → run
+    completes with the stock present."""
 
-    def failing_fetch(_keys):
-        raise ConnectionError("screener timed out")
-
-    def ok_enrich(sym, exch, n_bars=60):
-        return {
-            "name": f"{exch}:{sym}",
+    monkeypatch.setattr(
+        "stock_analyze.pipeline.resolve_force_symbol",
+        lambda sym: {
+            "name": f"NYSE:{sym}",
             "symbol": sym,
-            "exchange": exch,
-            "close": 25.0,
-            "gap": 8.7,
-            "volume": 1000000,
-            "relative_volume_10d_calc": 4.0,
-            "Value.Traded": 25000000,
-            "market_cap_basic": 500000000,
-            "average_volume_60d_calc": 400000,
-        }
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", lambda **kw: [])
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", failing_fetch)
-    monkeypatch.setattr("stock_analyze.data.tradingview.enrich_from_ohlcv", ok_enrich)
+            "exchange": "NYSE",
+            "market_cap": 500000000,
+            "description": f"{sym} Inc.",
+        },
+    )
+    fake_ohlcv = {
+        "name": "NYSE:JHX", "symbol": "JHX", "exchange": "NYSE",
+        "close": 25.0, "open": 25.0, "prior_close": 22.73,
+        "volume": 1000000, "relative_volume_10d_calc": 4.0,
+        "Value.Traded": 25000000, "avg_dollar_volume_50d": 5000000,
+    }
+    monkeypatch.setattr("stock_analyze.pipeline.to_ep_row", lambda sym: fake_ohlcv)
 
     payload = execute_ep_scan(
         force_keys=[("JHX", "NYSE")],
         select="strict",
         limit=300,
-        use_screener=True,
+        use_screener=False,
         apply_gates=True,
     )
 
@@ -416,22 +391,15 @@ def test_execute_ep_scan_survives_force_fetch_timeout(monkeypatch):
 
 
 def test_execute_ep_scan_drops_missing_symbols_without_crash(monkeypatch):
-    """fetch_symbols → [], enrich_from_ohlcv → IndexError → run completes,
-    counts 0 (regression for Connection timed out → IndexError chain)."""
+    """resolve_force_symbol returns None → _failed_force recorded, counts 0."""
 
-    def failing_enrich(sym, exch, n_bars=60, max_retries=3):
-        from stock_analyze.data.tradingview import EnrichResult
-        return EnrichResult(symbol=sym, exchange=exch, errors=[f"{exch}: IndexError: no data"])
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", lambda **kw: [])
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda _keys: [])
-    monkeypatch.setattr("stock_analyze.pipeline.enrich_with_retry", failing_enrich)
+    monkeypatch.setattr("stock_analyze.pipeline.resolve_force_symbol", lambda _sym: None)
 
     payload = execute_ep_scan(
         force_keys=[("MISSING", "NASDAQ")],
         select="strict",
         limit=300,
-        use_screener=True,
+        use_screener=False,
         apply_gates=True,
     )
 
@@ -440,73 +408,71 @@ def test_execute_ep_scan_drops_missing_symbols_without_crash(monkeypatch):
     assert payload["_failed_force"][0]["symbol"] == "MISSING"
 
 
-def test_execute_ep_scan_survives_screener_timeout_with_force(monkeypatch):
-    """fetch_us_ep_universe raises, force rows exist → run completes with
-    universe_source == "force"."""
+def test_execute_ep_scan_survives_symbol_resolution_failure(monkeypatch):
+    """resolve_force_symbol fails for one, succeeds for another → partial result."""
 
-    def failing_screener(**kw):
-        raise ConnectionError("screener down")
+    def _resolve(sym):
+        if sym == "BADSYM":
+            return None
+        return {
+            "name": f"NASDAQ:{sym}",
+            "symbol": sym,
+            "exchange": "NASDAQ",
+            "market_cap": 5_000_000_000,
+            "description": f"{sym} Inc.",
+        }
 
-    force_row = {
-        "name": "NYSE:JHX",
-        "close": 25.0,
-        "gap": 9.0,
-        "relative_volume_10d_calc": 4.0,
-        "market_cap_basic": 800000000,
-        "Value.Traded": 30000000,
-        "average_volume_60d_calc": 400000,
+    monkeypatch.setattr("stock_analyze.pipeline.resolve_force_symbol", _resolve)
+
+    fake_ohlcv = {
+        "name": "POLYGON:JHX", "symbol": "JHX", "exchange": "NASDAQ",
+        "close": 25.0, "open": 25.0, "prior_close": 22.73,
+        "volume": 1000000, "relative_volume_10d_calc": 4.0,
+        "Value.Traded": 30000000, "avg_dollar_volume_50d": 5000000,
     }
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", failing_screener)
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda _keys: [force_row])
+    monkeypatch.setattr("stock_analyze.pipeline.to_ep_row", lambda sym: fake_ohlcv)
 
     payload = execute_ep_scan(
-        force_keys=[("JHX", "NYSE")],
+        force_keys=[("BADSYM", "NASDAQ"), ("JHX", "NASDAQ")],
         select="strict",
         limit=300,
-        use_screener=True,
+        use_screener=False,
         apply_gates=True,
     )
 
     assert payload["universe_source"] == "force"
-    assert payload["strict"]["count"] == 1
+    assert len(payload.get("_failed_force") or []) == 1
 
 
-def test_force_symbol_resolves_to_screener_exchange(monkeypatch):
-    """force_keys=[("JHX","NASDAQ")] but screener returns NYSE:JHX row →
-    JHX stays in universe (root-cause fix holds)."""
+def test_force_symbol_resolves_correctly(monkeypatch):
+    """resolve_force_symbol returns NYSE row → JHX stays in universe."""
 
-    force_row = {
-        "name": "NYSE:JHX",
-        "symbol": "JHX",
-        "exchange": "NYSE",
-        "close": 25.0,
-        "gap": 9.0,
-        "relative_volume_10d_calc": 4.0,
-        "market_cap_basic": 800000000,
-        "Value.Traded": 30000000,
-        "average_volume_60d_calc": 400000,
+    def _resolve(sym):
+        return {
+            "name": f"NYSE:{sym}",
+            "symbol": sym,
+            "exchange": "NYSE",
+            "market_cap": 800000000,
+            "description": f"{sym} Inc.",
+        }
+
+    monkeypatch.setattr("stock_analyze.pipeline.resolve_force_symbol", _resolve)
+
+    fake_ohlcv = {
+        "name": "NYSE:JHX", "symbol": "JHX", "exchange": "NYSE",
+        "close": 25.0, "open": 25.0, "prior_close": 22.73,
+        "volume": 1000000, "relative_volume_10d_calc": 4.0,
+        "Value.Traded": 30000000, "avg_dollar_volume_50d": 5000000,
     }
-
-    enrich_calls = []
-
-    def maybe_enrich(sym, exch, n_bars=60, max_retries=3):
-        enrich_calls.append((sym, exch))
-        from stock_analyze.data.tradingview import EnrichResult
-        return EnrichResult(symbol=sym, exchange=exch, errors=["enrich fallback failed"])
-
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_us_ep_universe", lambda **kw: [])
-    monkeypatch.setattr("stock_analyze.pipeline.fetch_symbols", lambda _keys: [force_row])
-    monkeypatch.setattr("stock_analyze.pipeline.enrich_with_retry", maybe_enrich)
+    monkeypatch.setattr("stock_analyze.pipeline.to_ep_row", lambda sym: fake_ohlcv)
 
     payload = execute_ep_scan(
         force_keys=[("JHX", "NASDAQ")],
         select="strict",
         limit=300,
-        use_screener=True,
+        use_screener=False,
         apply_gates=True,
     )
 
-    # JHX is in the output even though the pasted exchange was NASDAQ
     symbols = {s["symbol"] for s in payload["strict"]["stocks"]}
     assert "JHX" in symbols
