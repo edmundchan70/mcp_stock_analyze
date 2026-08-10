@@ -1,11 +1,16 @@
 """Unit tests for VCP enrichment agent (mocked Tavily/LLM)."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 from stock_analyze.agents.enrichment import (
     enrich_with_vcp_context,
     load_vcp_stocks_from_input,
     _dedup_urls,
+    _is_transient_llm_error,
+    _parse_llm_json,
+    _with_retry,
 )
 from stock_analyze.models.vcp import VcpContextEnrichment, VcpStructuralRating
 
@@ -44,10 +49,12 @@ def _mock_leadership_search(symbol: str, company_name: str) -> list[dict[str, st
     ]
 
 
-def _mock_parser(symbol: str, company_name: str, snippets: list[dict[str, str]]) -> dict:
+def _mock_parser(
+    symbol: str, exchange: str, company_name: str, snippets: list[dict[str, str]]
+) -> dict:
     return VcpContextEnrichment(
         symbol=symbol,
-        exchange="NASDAQ",
+        exchange=exchange,
         sector="Technology",
         industry="Consumer Electronics",
         industry_group_strength_flag="HOT_SECTOR",
@@ -57,6 +64,23 @@ def _mock_parser(symbol: str, company_name: str, snippets: list[dict[str, str]])
         growth_catalysts="AI, Services",
         thematic_momentum="AI wave",
     ).model_dump()
+
+
+def _mock_parser_missing_exchange(
+    symbol: str, exchange: str, company_name: str, snippets: list[dict[str, str]]
+) -> dict:
+    """Simulate the LLM bug: JSON omits the required `exchange` field."""
+    return {
+        "symbol": symbol,
+        "sector": "Technology",
+        "industry": "Consumer Electronics",
+        "industry_group_strength_flag": "HOT_SECTOR",
+        "is_category_leader": True,
+        "top_competitors": ["MSFT", "GOOGL"],
+        "market_leadership_context": "Top player",
+        "growth_catalysts": "AI, Services",
+        "thematic_momentum": "AI wave",
+    }
 
 
 class TestEnrichment:
@@ -100,6 +124,77 @@ class TestEnrichment:
             max_concurrent=2,
         )
         assert len(results) == 2
+
+    def test_enrichment_injects_exchange_when_llm_omits_it(self):
+        """LLM JSON missing `exchange` → exchange injected from stock, no soft-fail."""
+        stocks = [_make_structural()]
+        results = enrich_with_vcp_context(
+            stocks,
+            search_taxonomy=_mock_taxonomy_search,
+            search_leadership=_mock_leadership_search,
+            parse_context=_mock_parser_missing_exchange,
+        )
+        assert len(results) == 1
+        assert results[0].error is None
+        assert results[0].symbol == "AAPL"
+        assert results[0].exchange == "NASDAQ"
+        assert results[0].sector == "Technology"
+
+
+class TestParseLlmJson:
+    def test_parse_llm_json_injects_exchange(self):
+        """LLM JSON without `exchange` validates after the field is injected."""
+        content = json.dumps({
+            "symbol": "TECK",
+            "sector": "Materials",
+            "industry_group_strength_flag": "NEUTRAL",
+            "is_category_leader": False,
+        })
+        result = _parse_llm_json(content, symbol="TECK", exchange="NYSE")
+        assert result["symbol"] == "TECK"
+        assert result["exchange"] == "NYSE"
+        assert result["sector"] == "Materials"
+
+    def test_parse_llm_json_keeps_llm_exchange_when_present(self):
+        """LLM-provided `exchange` is preserved over the injected default."""
+        content = json.dumps({"symbol": "AAPL", "exchange": "NASDAQ"})
+        result = _parse_llm_json(content, symbol="AAPL", exchange="NYSE")
+        assert result["exchange"] == "NASDAQ"
+
+    def test_parse_llm_json_raises_on_non_json(self):
+        with pytest.raises(ValueError, match="non-JSON"):
+            _parse_llm_json("not json at all", symbol="AAPL", exchange="NASDAQ")
+
+
+class TestRetryPolicy:
+    def test_with_retry_fails_fast_on_missing_field(self):
+        """Deterministic missing-field error → no wasted retry LLM call."""
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise ValueError(
+                "LLM JSON failed schema: 1 validation error for "
+                "VcpContextEnrichment\nexchange\n  Field required [type=missing, ...]"
+            )
+
+        with pytest.raises(RuntimeError, match="LLM parse error"):
+            _with_retry(boom, label="LLM parse", should_retry=_is_transient_llm_error)
+        assert calls["n"] == 1
+
+    def test_with_retry_regenerates_on_transient_error(self):
+        """Malformed JSON may be a transient glitch → retried once."""
+        calls = {"n": 0}
+
+        def glitch():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("LLM returned non-JSON: ```json {...")
+            return {"symbol": "AAPL", "exchange": "NASDAQ"}
+
+        result = _with_retry(glitch, label="LLM parse", should_retry=_is_transient_llm_error)
+        assert calls["n"] == 2
+        assert result == {"symbol": "AAPL", "exchange": "NASDAQ"}
 
 
 class TestDedup:

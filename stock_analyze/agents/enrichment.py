@@ -34,6 +34,8 @@ DEFAULT_ENRICHMENT_LLM_MODEL = "deepseek/deepseek-v4-flash-0731"
 SYSTEM_PROMPT = (
     "You classify a stock's sector/industry positioning and market leadership. "
     "Given search results, determine:\n"
+    "- symbol: the stock's ticker symbol\n"
+    "- exchange: the stock's primary exchange (e.g. NASDAQ, NYSE, AMEX)\n"
     "- sector: broad sector (e.g. Technology, Healthcare, Financial)\n"
     "- industry: specific sub-industry\n"
     "- top_competitors: top 3-5 competitors by ticker/name\n"
@@ -52,7 +54,7 @@ TickerFn = Callable[[int, int, str, str], None]
 SearchTaxonomyFn = Callable[[str, str], list[dict[str, str]]]
 SearchLeadershipFn = Callable[[str, str], list[dict[str, str]]]
 ParseContextFn = Callable[
-    [str, str, list[dict[str, str]]],
+    [str, str, str, list[dict[str, str]]],
     dict[str, Any],
 ]
 
@@ -128,11 +130,13 @@ def _make_openrouter_parser(
 
     def parse(
         symbol: str,
+        exchange: str,
         company_name: str,
         merged_snippets: list[dict[str, str]],
     ) -> dict[str, Any]:
         user = (
             f"Symbol: {symbol}\n"
+            f"Exchange: {exchange}\n"
             f"Company: {company_name}\n\n"
             f"Search results:\n"
             + json.dumps(merged_snippets, ensure_ascii=False)
@@ -150,14 +154,14 @@ def _make_openrouter_parser(
         )
         elapsed_s = time.perf_counter() - t0
         content = resp.choices[0].message.content or ""
-        result = _parse_llm_json(content, symbol=symbol)
+        result = _parse_llm_json(content, symbol=symbol, exchange=exchange)
         logger.debug("LLM VCP enrich — %s: %.1fs", symbol, elapsed_s)
         return result
 
     return parse
 
 
-def _parse_llm_json(content: str, *, symbol: str) -> dict[str, Any]:
+def _parse_llm_json(content: str, *, symbol: str, exchange: str) -> dict[str, Any]:
     text = content.strip()
     try:
         data = json.loads(text)
@@ -169,6 +173,7 @@ def _parse_llm_json(content: str, *, symbol: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("LLM JSON must be an object")
     data.setdefault("symbol", symbol)
+    data.setdefault("exchange", exchange)
     try:
         return VcpContextEnrichment.model_validate(data).model_dump()
     except ValidationError as exc:
@@ -188,7 +193,30 @@ def _dedup_urls(snippets_a: list[dict[str, str]], snippets_b: list[dict[str, str
     return merged
 
 
-def _with_retry(fn: Callable[[], Any], *, label: str, attempts: int = 2) -> Any:
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """True when a regenerated prompt may fix an LLM parse failure.
+
+    A missing required field is deterministic — the caller already knows the
+    value, so retrying the same prompt just burns a fresh LLM call. Other
+    failures (malformed JSON, wrong types, stray tokens) may be transient
+    LLM glitches worth one more attempt.
+    """
+    return "Field required" not in str(exc)
+
+
+def _with_retry(
+    fn: Callable[[], Any],
+    *,
+    label: str,
+    attempts: int = 2,
+    should_retry: Optional[Callable[[Exception], bool]] = None,
+) -> Any:
+    """Run fn up to `attempts` times.
+
+    Retries any exception by default. `should_retry(exc)` classifies a
+    failure: returning False gives up immediately so a known-unfixable error
+    never wastes another LLM call.
+    """
     last: Optional[Exception] = None
     for i in range(attempts):
         try:
@@ -196,6 +224,8 @@ def _with_retry(fn: Callable[[], Any], *, label: str, attempts: int = 2) -> Any:
         except Exception as exc:
             last = exc
             logger.debug("%s attempt %s failed: %s", label, i + 1, exc)
+            if should_retry is not None and not should_retry(exc):
+                break
     assert last is not None
     raise RuntimeError(f"{label} error: {last}") from last
 
@@ -310,10 +340,15 @@ def enrich_with_vcp_context(
                 parsed = await loop.run_in_executor(
                     None,
                     lambda: _with_retry(
-                        lambda: parser(symbol, company_name, merged), label="LLM parse"
+                        lambda: parser(symbol, exchange, company_name, merged),
+                        label="LLM parse",
+                        should_retry=_is_transient_llm_error,
                     ),
                 )
 
+                # Identity fields are known to the caller; inject if the LLM omitted them.
+                parsed.setdefault("symbol", symbol)
+                parsed.setdefault("exchange", exchange)
                 context = VcpContextEnrichment.model_validate(parsed)
                 context.symbol = symbol
                 context.exchange = exchange
