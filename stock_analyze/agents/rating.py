@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date
 from typing import Any, Callable, Optional, Sequence, Union, cast
 
@@ -43,6 +44,7 @@ SYSTEM_PROMPT = (
 
 SearchNewsFn = Callable[[str], list[dict[str, str]]]
 RateFn = Callable[[str, dict[str, Any], list[dict[str, str]]], dict[str, Any]]
+TickerFn = Callable[[int, int, str, str], None]
 
 
 def apply_rating_caps(
@@ -76,8 +78,14 @@ def rate_ep_catalysts(
     model: Optional[str] = None,
     search_news: Optional[SearchNewsFn] = None,
     rate_catalyst: Optional[RateFn] = None,
+    on_ticker: Optional[TickerFn] = None,
 ) -> list[EpRatedStock]:
-    """Rate Agent 2 stocks for EP catalyst fit. Soft-fails per symbol. Sorted best→worst."""
+    """Rate Agent 2 stocks for EP catalyst fit. Soft-fails per symbol. Sorted best→worst.
+
+    When ``on_ticker`` is given, it is called as
+    ``on_ticker(index, total, symbol, action)`` before each network call so a
+    Run Progress reporter can show which symbol is being worked on.
+    """
     if search_news is None or rate_catalyst is None:
         load_dotenv()
 
@@ -85,15 +93,20 @@ def rate_ep_catalysts(
     rate = rate_catalyst or _make_openrouter_rater(openrouter_api_key, model=model)
 
     rated: list[EpRatedStock] = []
-    for raw in stocks:
+    total = len(stocks)
+    for index, raw in enumerate(stocks, start=1):
         base = _as_stock_dict(raw)
         symbol = str(base.get("symbol") or "").upper()
         try:
+            if on_ticker is not None:
+                on_ticker(index, total, symbol, "searching news")
             snippets = _with_retry(lambda: search(symbol), label="Tavily")
 
             def _rate_and_validate() -> EpRatingProposal:
                 return EpRatingProposal.model_validate(rate(symbol, base, snippets))
 
+            if on_ticker is not None:
+                on_ticker(index, total, symbol, "rating")
             proposal = _with_retry(_rate_and_validate, label="LLM")
             rated.append(_merge(base, proposal))
         except Exception as exc:
@@ -227,6 +240,7 @@ def _make_openrouter_rater(
             f"News snippets:\n{json.dumps(snippets, ensure_ascii=False)}\n\n"
             "Return JSON only."
         )
+        t0 = time.perf_counter()
         resp = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -236,8 +250,13 @@ def _make_openrouter_rater(
             temperature=0,
             response_format={"type": "json_object"},
         )
+        elapsed_s = time.perf_counter() - t0
         content = resp.choices[0].message.content or ""
-        return _parse_llm_json(content, symbol=symbol)
+        result = _parse_llm_json(content, symbol=symbol)
+        logger.debug("LLM rating — %s: %.1fs", symbol, elapsed_s)
+        if elapsed_s > 10:
+            logger.warning("LLM rating — %s took %.1fs", symbol, elapsed_s)
+        return result
 
     return rate
 

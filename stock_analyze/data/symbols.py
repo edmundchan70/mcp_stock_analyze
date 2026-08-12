@@ -1,10 +1,14 @@
-"""Shared EXCHANGE:SYMBOL parsing."""
+"""Shared EXCHANGE:SYMBOL parsing and US exchange resolution."""
 
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Tuple
 
 SymbolKey = Tuple[str, str]
+
+# Ordered US exchange fallback for OHLCV enrichment resolution.
+# Probed in order: NASDAQ first (most common), then NYSE, AMEX, BATS, CBOE.
+US_EXCHANGE_FALLBACK_ORDER: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX", "BATS", "CBOE")
 
 
 def parse_symbol_exchange(

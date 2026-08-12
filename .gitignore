@@ -31,6 +31,7 @@ Thumbs.db
 
 # Local scan outputs
 ep_scan*.json
+output/
 
 # Type check / coverage
 .mypy_cache/

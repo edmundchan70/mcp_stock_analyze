@@ -383,7 +383,7 @@ def analyze_vcp_for_agent(
     """
     try:
         # Import here to avoid circular imports
-        from tradingview_data import get_stock_data
+        from stock_analyze.data.polygon import get_stock_data
 
         # Fetch stock data
         df = get_stock_data(

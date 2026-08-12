@@ -105,6 +105,32 @@ def test_enrich_llm_error_retries_then_soft_fails():
     assert "bad json" in out[0].catalyst_summary
 
 
+def test_enrich_on_ticker_reports_symbol_and_action():
+    events: list[tuple] = []
+
+    out = enrich_with_catalysts(
+        [_stock(symbol="NVDA"), _stock(symbol="AMD")],
+        search_news=lambda s: [{"title": "t", "content": "c"}],
+        summarize_catalyst=lambda s, snips: {
+            "ticker": s,
+            "catalyst_found": False,
+            "catalyst_type": "UNKNOWN",
+            "summary": "none",
+        },
+        on_ticker=lambda index, total, symbol, action: events.append(
+            (index, total, symbol, action)
+        ),
+    )
+
+    assert len(out) == 2
+    assert events == [
+        (1, 2, "NVDA", "searching news"),
+        (1, 2, "NVDA", "compressing"),
+        (2, 2, "AMD", "searching news"),
+        (2, 2, "AMD", "compressing"),
+    ]
+
+
 def test_load_stocks_from_input_defaults_to_strict_bucket():
     payload = {
         "baseline": {"count": 1, "stocks": [_stock(symbol="WEAK", gap_pct=5.0)]},
@@ -119,6 +145,14 @@ def test_load_stocks_from_input_bare_list():
     stocks = load_stocks_from_input([_stock()], select="strict")
     assert len(stocks) == 1
     assert stocks[0]["symbol"] == "NVDA"
+
+
+def test_load_stocks_from_input_both_empty_buckets_returns_empty_list():
+    payload = {
+        "baseline": {"count": 0, "stocks": []},
+        "strict": {"count": 0, "stocks": []},
+    }
+    assert load_stocks_from_input(payload, select="both") == []
 
 
 def test_cli_catalyst_selects_strict_and_writes_envelope(tmp_path, monkeypatch):
@@ -153,8 +187,10 @@ def test_cli_catalyst_selects_strict_and_writes_envelope(tmp_path, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(cli_mod, "enrich_with_catalysts", fake_enrich)
-    monkeypatch.setattr(cli_mod, "load_dotenv", lambda: None)
+    import stock_analyze.pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "enrich_with_catalysts", fake_enrich)
+    monkeypatch.setattr(pipeline_mod, "load_dotenv", lambda: None)
 
     rc = cli_mod.main(["catalyst", "--in", str(in_path), "--out", str(out_path)])
     assert rc == 0

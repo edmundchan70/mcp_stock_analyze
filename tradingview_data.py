@@ -5,11 +5,12 @@ Provides reusable functions for fetching stock data from TradingView
 that can be used by agents and MCP servers.
 """
 
-from typing import Optional, Dict, Any, Literal
+from typing import Callable, Optional, Dict, Any, List, Literal, Tuple
 from tvDatafeed import TvDatafeed, Interval
 import pandas as pd
 from datetime import datetime
 import logging
+import time
 
 from models import StockCandle, StockDataSummary, StockDataResult
 
@@ -17,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 # Singleton instance for TvDatafeed (optional credentials)
 _tv_instance: Optional[TvDatafeed] = None
+
+
+def _close_tv_socket() -> None:
+    """Close the singleton WebSocket to prevent stale-socket timeouts on sequential fetches."""
+    global _tv_instance
+    if _tv_instance is not None and hasattr(_tv_instance, "ws") and _tv_instance.ws is not None:
+        try:
+            _tv_instance.ws.close()
+        except Exception:
+            pass
+        _tv_instance.ws = None
 
 
 def get_tv_instance(
@@ -116,9 +128,12 @@ def get_stock_data(
         raise ValueError(f"n_bars must be positive, got {n_bars}")
     
     try:
+        # Close stale socket from prior calls before fetching
+        _close_tv_socket()
+
         # Get TvDatafeed instance
         tv = get_tv_instance(username=username, password=password)
-        
+
         # Retrieve data
         logger.info(f"Fetching {n_bars} {interval} bars for {symbol} on {exchange}")
         data = tv.get_hist(
@@ -127,7 +142,10 @@ def get_stock_data(
             interval=interval_map[interval],
             n_bars=n_bars,
         )
-        
+
+        # Close socket after fetch to prevent cascading timeouts
+        _close_tv_socket()
+
         # Convert to DataFrame
         df = pd.DataFrame(data)
         
@@ -186,6 +204,7 @@ def get_stock_data(
             return df
         
     except Exception as e:
+        _close_tv_socket()
         logger.error(f"Failed to retrieve data for {symbol} on {exchange}: {str(e)}")
         raise
 
@@ -424,4 +443,110 @@ def get_multiple_symbols(
             logger.warning(f"Failed to retrieve {symbol}: {str(e)}")
             results[symbol] = None
     
+    return results
+
+
+def batch_get_stock_data(
+    symbols: List[Tuple[str, str]],
+    *,
+    n_bars: int = 300,
+    refresh_every: int = 50,
+    inter_fetch_delay: float = 0.3,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    on_progress: Optional[Callable[[int, int, str, str], None]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Batch-fetch daily OHLCV for many symbols with persistent WebSocket.
+
+    Keeps the TradingView WebSocket alive across symbols for speed, refreshes
+    proactively every ``refresh_every`` successful fetches, reconnects on
+    WebSocket errors, and soft-fails individual symbols.
+
+    Args:
+        symbols: List of ``(symbol, exchange)`` tuples.
+        n_bars: Number of daily bars per symbol (default 300).
+        refresh_every: Refresh WebSocket every N successful fetches (default 50).
+        inter_fetch_delay: Seconds between successive fetches (default 0.3).
+        username: TradingView username (optional).
+        password: TradingView password (optional).
+        on_progress: Optional callback ``(idx, total, symbol, exchange)`` fired
+            after each successful fetch for live progress reporting.
+
+    Returns:
+        Dict mapping uppercase symbol to DataFrame (None for failed symbols).
+    """
+    interval_map = {
+        "daily": Interval.in_daily,
+    }
+
+    _close_tv_socket()
+    tv = get_tv_instance(username=username, password=password)
+    results: Dict[str, pd.DataFrame] = {}
+    success_count = 0
+    total = len(symbols)
+
+    for idx, (symbol, exchange) in enumerate(symbols, start=1):
+        try:
+            data = tv.get_hist(
+                symbol=symbol,
+                exchange=exchange,
+                interval=Interval.in_daily,
+                n_bars=n_bars,
+            )
+
+            df = pd.DataFrame(data)
+
+            # Ensure datetime index
+            if not isinstance(df.index, pd.DatetimeIndex):
+                if 'datetime' in df.columns:
+                    df['datetime'] = pd.to_datetime(df['datetime'])
+                    df.set_index('datetime', inplace=True)
+                elif df.index.name == 'datetime' or df.index.dtype == 'object':
+                    df.index = pd.to_datetime(df.index)
+
+            df.sort_index(inplace=True)
+            results[symbol.upper()] = df
+            success_count += 1
+
+            if on_progress is not None:
+                on_progress(idx, total, symbol, exchange)
+
+            logger.debug(
+                "[batch %d/%d] %s:%s — %d bars",
+                idx, total, exchange, symbol, len(df),
+            )
+
+            # Proactive refresh every N successful fetches
+            if success_count % refresh_every == 0:
+                logger.info(
+                    "[batch] refreshed socket after %d/%d fetches (%d successes)",
+                    idx, total, success_count,
+                )
+                _close_tv_socket()
+                tv = get_tv_instance(username=username, password=password)
+
+        except Exception as exc:
+            logger.warning(
+                "[batch %d/%d] %s:%s FAILED: %s",
+                idx, total, exchange, symbol, exc,
+            )
+            results[symbol.upper()] = None
+
+            # Reconnect on error
+            try:
+                _close_tv_socket()
+                tv = get_tv_instance(username=username, password=password)
+                logger.debug("[batch] reconnected socket after error")
+            except Exception:
+                logger.debug("[batch] reconnect failed, will retry on next fetch")
+
+        # Inter-fetch delay
+        if idx < total:
+            time.sleep(inter_fetch_delay)
+
+    _close_tv_socket()
+    logger.info(
+        "[batch] complete: %d/%d symbols fetched, %d failures",
+        success_count, total, total - success_count,
+    )
     return results

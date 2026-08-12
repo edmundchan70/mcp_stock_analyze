@@ -1,0 +1,207 @@
+﻿Algorithmic Tavily Query Architecture for VCP Context Retrieval and Momentum Screening
+In quantitative momentum and swing trading architectures inspired by Mark Minervini’s Specific Entry Point Analysis (SEPA) and Kristjan Qullamaggie’s momentum principles, technical screening functions as an initial structural filter1. Technical screens efficiently isolate Stage 2 uptrends, moving average alignments (50-day, 150-day, and 200-day), and Volatility Contraction Patterns (VCP)2. However, technical parameters alone cannot evaluate the fundamental and narrative engine driving price structure2.
+The primary failure point in building automated screening services lies in context retrieval. When leveraging search APIs such as Tavily to inform Large Language Model (LLM) agents, the construction of the search query determines the signal-to-noise ratio of the retrieved context6.
+Episodic Pivot (EP) setups utilize event-driven search parameters focused on discrete occurrences such as earnings surprises, revenue beats, and forward guidance revisions1. In contrast, VCP setup validation requires evaluating three distinct narrative and structural vectors2:
+1. Industry classification and sub-group taxonomy8.
+2. Industry group relative strength and emerging macro themes4.
+3. Niche market leadership and competitive moat status3.
+Attempting to retrieve all three vectors through a single, unstructured search string causes semantic dilution6. When a query is overloaded with disparate concepts, Tavily’s dense retrieval models struggle to weight structural metadata against qualitative narrative signals6. A structured, multi-query parallel retrieval architecture is required to systematically extract high-density financial context for downstream LLM extraction pipelines6.
+Deconstructing the VCP Information Triad
+Minervini’s SEPA methodology demonstrates that over 90% of superperformance stocks emerge from leading industry groups during market uptrends, with the top one to three stocks in a group delivering the majority of total sector gains3. Evaluating a potential VCP breakout requires extracting three distinct layers of context from unstructured web data.
+Sector and Industry Sub-Group Taxonomy
+A stock’s raw ticker symbol does not inherently communicate its operational focus. Standard broad sector designations (e.g., "Technology") are too broad to provide actionable trading signals. Superperformance occurs within specialized sub-groups (e.g., "Semiconductor Memory" or "Enterprise Security Software")3. The screening engine must retrieve the precise sub-industry classification and establish the company's primary direct peers to evaluate relative group behavior3.
+Industry Group Relative Strength and Thematic Momentum
+Under Minervini and Investor's Business Daily (IBD) principles, top-performing stocks belong to industry groups demonstrating top-tier relative strength or ranking within the top 20% of all tracked industry groups8. In an automated workflow, web search must confirm whether the target stock's broader industry is experiencing institutional capital inflow driven by secular growth trends (such as AI infrastructure spending, weight-loss therapeutic adoption, or electrical grid modernization)2.
+Niche Category Leadership and Competitive Position
+A core tenet of swing trading methodology is avoiding secondary "group follow-ons" or laggard stocks3. When an industry group advances, the primary market leader breaks out first and achieves the largest price expansion3. The search query must evaluate whether the company possesses true market dominance, proprietary product advantages, or accelerating earnings and sales growth matching Minervini’s "Code 33" criteria (three quarters of accelerating earnings, sales, and profit margins)3.
+Query Strategy Vector
+	Latency Profile
+	Information Density
+	Risk of Semantic Dilution
+	LLM Parsing Accuracy
+	Single Overloaded Query
+	Low (~300–600ms)
+	Low to Medium
+	High
+	Low (Fails to capture specific market share metrics)
+	Single Natural Language Question
+	Medium (~800–1200ms)
+	Medium
+	Moderate
+	Medium (Over-indexes on general news summaries)
+	Dual-Query Parallel Architecture
+	Low to Medium (~400–700ms parallelized)
+	High
+	Low
+	High (Provides optimal operational separation)
+	Multi-Agent Deep Research
+	Very High (>5000ms)
+	Excessive Context
+	Very Low
+	Low to Moderate (Exceeds real-time screening latency budgets)
+	Limitations of the Single-Query Framing
+The initial impulse in designing Tavily search strings is to construct a single comprehensive prompt, such as:
+"{symbol} {company_name} stock sector industry competitive position market leader growth trends 2025 2026"
+While convenient, this approach presents three major engineering limitations within retrieval-augmented generation (RAG) systems:
+First, keyword oversaturation creates semantic conflicts6. Combining structural lookups (stock, sector, industry) with qualitative analytical prompts (competitive position, market leader) forces Tavily's reranking model to search across disparate document types—financial database entries, PR news feeds, and opinion pieces6. This degrades the relevance score of the retrieved chunks6.
+Second, explicit temporal tags like 2025 2026 introduce noise6. Including distant future dates pulls speculative forward-looking projections rather than recent institutional sentiment, active trailing performance drivers, and current market share dominance6.
+Third, chunk allocation becomes inefficient6. Tavily returns a restricted set of reranked text chunks controlled by the chunks_per_source parameter6. An unstructured query distributes these limited chunks across generic corporate overviews, leaving insufficient context window budget for detailed competitive analysis10.
+Dual-Query Parallel Retrieval Architecture
+To maximize signal density and maintain strict execution latency, the screening architecture splits context retrieval into two specialized, concurrent calls using Tavily's asynchronous implementation or search_dedup pattern6. Separating factual classification from qualitative leadership analysis ensures high precision across both domains6.
+
+
+
+
+
+
+Parallel Asynchronous Search Pipeline Execution
+├── Query 1: Structural Taxonomy Vector
+│   ├── Target: Sector, Industry Sub-Group, Direct Peers
+│   ├── Query String: "{symbol} {company_name} stock sector industry classification top competitors"
+│   └── API Parameters: topic="finance", search_depth="basic", max_results=5, chunks_per_source=2
+└── Query 2: Market Leadership & Catalyst Vector
+   ├── Target: Market Share Dominance, Growth Drivers, Secular Themes
+   ├── Query String: "{symbol} {company_name} market leader competitors market share growth drivers key catalysts"
+   └── API Parameters: topic="news", search_depth="advanced", time_range="month", max_results=5, chunks_per_source=3
+
+Structural Taxonomy Vector (Query 1)
+Query 1 focuses exclusively on establishing exact sub-industry classification and identifying primary peer tickers3. Executed with topic="finance" and search_depth="basic", it retrieves factual structured profiles from financial news aggregators and equity databases with minimal latency and credit consumption6.
+The search string is framed as:
+"{symbol} {company_name} stock sector industry classification top competitors"
+Market Leadership and Growth Catalyst Vector (Query 2)
+Query 2 targets the narrative components that define market leadership and industry group momentum3. Executed with topic="news" or topic="finance", search_depth="advanced", and a bounded time_range="month" or "year", this call queries equity research notes, trade publications, and business news to extract operational drivers6.
+The search string is framed as:
+"{symbol} {company_name} market leader competitors market share growth drivers key catalysts"
+Executing these two queries in parallel ensures that the retrieval system extracts factual taxonomy data alongside narrative leadership metrics6. The resulting chunks are deduplicated by URL, merged, and forwarded to the downstream LLM context window6.
+Technical API Parameter Specifications
+Maximizing the utility of retrieved web context requires configuring Tavily’s API parameters to match the nature of financial data extraction6.
+
+
+
+
+
+
+Tavily Search Parameter Optimization Matrix
+┌─────────────────────┬───────────────────────────────┬───────────────────────────────┐
+│ Parameter           │ Query 1: Taxonomy Vector      │ Query 2: Leadership Vector    │
+├─────────────────────┼───────────────────────────────┼───────────────────────────────┤
+│ API Endpoint        │ /search                       │ /search                       │
+│ search_depth        │ basic                         │ advanced                      │
+│ topic               │ finance                       │ news                          │
+│ time_range          │ null (Static taxonomy)        │ month or year                 │
+│ max_results         │ 5                             │ 5                             │
+│ chunks_per_source   │ 2                             │ 3                             │
+│ auto_parameters     │ false                         │ false                         │
+│ include_raw_content │ false                         │ true (markdown)               │
+└─────────────────────┴───────────────────────────────┴───────────────────────────────┘
+
+The search_depth parameter governs both latency and credit usage6. Setting Query 1 to basic uses 1 credit per request and returns results quickly, which is appropriate for stable factual lookups6. Setting Query 2 to advanced consumes 2 credits per request but enables Tavily to execute multi-branch searching and reranking across specialized industry publications6.
+The time_range parameter prevents out-of-date narrative retrieval6. Restricting Query 2 to month or year ensures that the catalysts analyzed reflect current operational conditions rather than historical cycles6.
+Domain filtering via include_domains or exclude_domains further refines response quality6. To minimize noise, general content aggregators and stock discussion forums should be excluded from search operations, directing retrieval toward equity research aggregators, press release feeds, and financial news networks6.
+Structured Output Extraction Schema
+After executing parallel Tavily retrieval calls, the consolidated text chunks are ingested by an LLM parsing step10. To convert unstructured web context into structured quantitative filters, the extraction step must enforce strict JSON Schema validation14.
+
+
+
+
+
+
+JSON
+{
+ "$schema": "http://json-schema.org/draft-07/schema#",
+ "title": "VCPContextEvaluation",
+ "type": "object",
+ "properties": {
+   "symbol": {
+     "type": "string"
+   },
+   "company_name": {
+     "type": "string"
+   },
+   "sector_taxonomy": {
+     "type": "object",
+     "properties": {
+       "broad_sector": { "type": "string" },
+       "specific_industry_group": { "type": "string" },
+       "direct_competitors": {
+         "type": "array",
+         "items": { "type": "string" },
+         "maxItems": 3
+       }
+     },
+     "required": ["broad_sector", "specific_industry_group", "direct_competitors"]
+   },
+   "market_leadership": {
+     "type": "object",
+     "properties": {
+       "is_category_leader": {
+         "type": "boolean",
+         "description": "True if company ranks top 1-3 in market share, revenue growth, or technological leadership within its niche."
+       },
+       "leadership_rank_estimate": {
+         "type": "integer",
+         "minimum": 1,
+         "maximum": 10
+       },
+       "competitive_advantage_summary": {
+         "type": "string",
+         "maxLength": 250
+       }
+     },
+     "required": ["is_category_leader", "competitive_advantage_summary"]
+   },
+   "thematic_momentum": {
+     "type": "object",
+     "properties": {
+       "primary_growth_drivers": {
+         "type": "array",
+         "items": { "type": "string" }
+       },
+       "industry_group_strength_flag": {
+         "type": "string",
+         "enum": ["HOT_SECTOR", "NEUTRAL", "DECLINING_GROUP"]
+       },
+       "macro_catalyst_narrative": {
+         "type": "string",
+         "maxLength": 300
+       }
+     },
+     "required": ["primary_growth_drivers", "industry_group_strength_flag"]
+   }
+ },
+ "required": ["symbol", "company_name", "sector_taxonomy", "market_leadership", "thematic_momentum"]
+}
+
+Implementation Engineering and Operational Guidelines
+Integrating this RAG pipeline into a high-throughput stock screening engine requires establishing operational guardrails around concurrency, API limits, credit consumption, and session persistence6.
+Asynchronous Execution and Concurrency Management
+When screening candidates that pass technical VCP filters, batch calls to Tavily must be managed using bounded concurrency semaphores6. The maximum concurrent requests should be bounded according to your Tavily tier rate limits using:
+  
+
+For example, a system operating at 120 Requests Per Minute (RPM) with an average Tavily latency of 2.5 seconds should set its asyncio semaphore cap to 5 concurrent jobs6.
+Result Deduplication and Credit Optimization
+When running multi-query pipelines across identical candidate pools, URL deduplication is critical6. Utilizing Tavily's search_dedup agent or applying local hashing functions to incoming URL result payloads prevents paying token processing costs for duplicate web pages6.
+Furthermore, developers must pass include_usage=True within requests to track credit consumption across basic (1 credit) and advanced (2 credits) search depths6.
+Request Timeout and Retry Policy
+Production pipelines must define strict timeout boundaries per search request (e.g., timeout=10 seconds) to prevent slow external web indexing calls from blocking batch execution6. Failed requests should be isolated, tagged with error states, and retried using exponential backoff schedules rather than interrupting the broader screening run6.
+Multi-Step Session Tracking
+When using LLM agents to execute follow-up extraction or content crawling on high-conviction VCP candidates, set a persistent session_id header across all related API calls6. This enables end-to-end tracing across initial search lookup, URL extraction, and final LLM synthesis6.
+Strategic Conclusions
+A successful AI-driven VCP screening service requires separating technical pattern matching from context retrieval design2. While technical filters efficiently narrow thousands of stocks down to actionable consolidations, the application of query parameters determines whether an LLM can correctly evaluate fundamental quality, sector leadership, and thematic catalysts3.
+By abandoning single, over-stuffed search prompts in favor of a dual-query parallel pipeline, system architects can capture precise sub-industry taxonomy alongside qualitative narrative signals6. Configuring Tavily’s topic, search_depth, and domain parameters specifically for each query type reduces semantic noise, minimizes latency, and optimizes credit utilization6. Downstream LLM parsing models can then process this high-density context against structured schemas, ensuring that only true market leaders in high-strength industry groups pass through to the final trading dashboard3.
+Works cited
+1. Ultimate High Tight Flag explanation (for Beginners) | Live Trading Qullamaggie - YouTube, https://www.youtube.com/watch?v=kWbE0te6_5c
+2. Trade Like a Stock Market Wizard - BeFreed, https://www.befreed.ai/book/trade-like-a-stock-market-wizard-by-mark-minervini
+3. Trade Like a Stock Market Wizard Review | PDF | Price–Earnings Ratio - Scribd, https://www.scribd.com/document/464335489/CF-3-19-37-45-47-docx
+4. Books on technical analysis - ValuePickr Forum, https://forum.valuepickr.com/t/books-on-technical-analysis/132013
+5. MARK MINERVINI Trading Strategy EXPLAINED | Volatility Contraction Patterns, https://lilys.ai/en/notes/notebooklm-20251211/mark-minervini-volatility-contraction-strategy
+6. Best Practices for Search - Tavily Docs, https://docs.tavily.com/documentation/best-practices/best-practices-search
+7. VERAFI: Verified Agentic Financial Intelligence through Neurosymbolic Policy Generation, https://arxiv.org/html/2512.14744v1
+8. How to Find Mark Minervini's VCP Setup [Swing Trade], https://lilys.ai/en/notes/notebooklm-20251211/mark-minervini-vcp-search-setup
+9. StockSelectionChecklistwithNon-NegotiableCriteria | PDF | Stocks, https://www.scribd.com/document/1026055510/StockSelectionChecklistwithNon-NegotiableCriteria
+10. Best Practices for Extract - Tavily Docs, https://docs.tavily.com/documentation/best-practices/best-practices-extract
+11. Tools Reference - Tavily Docs, https://docs.tavily.com/examples/agent-toolkit/tools
+12. IBD Sell Buy Rules2 7 | PDF | Stocks | Chicago Mercantile Exchange - Scribd, https://www.scribd.com/document/191223387/IBD-Sell-Buy-Rules2-7
+13. SDK Reference - Tavily Docs, https://docs.tavily.com/sdk/python/reference
+14. Best Practices for Research - Tavily Docs, https://docs.tavily.com/documentation/best-practices/best-practices-research
+15. tavily-ai/langchain-tavily - GitHub, https://github.com/tavily-ai/langchain-tavily

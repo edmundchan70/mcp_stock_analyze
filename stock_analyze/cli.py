@@ -1,35 +1,95 @@
-"""CLI: python -m stock_analyze ep|catalyst|rate ..."""
+"""CLI: python -m stock_analyze [ep|catalyst|rate|vcp|vcp-scan|vcp-enrich|bo|bo-scan|bo-enrich] ...  (no args → interactive wizard)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-from datetime import date
 from pathlib import Path
 from typing import Literal, Optional
 
-from dotenv import load_dotenv
+import questionary
 
-from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
-from stock_analyze.agents.rating import rate_ep_catalysts
-from stock_analyze.data.screener import fetch_symbols, fetch_us_ep_universe
-from stock_analyze.data.symbols import row_symbol_key
-from stock_analyze.data.tradingview import enrich_from_ohlcv
-from stock_analyze.models.catalyst import CatalystBucket
-from stock_analyze.models.rating import EpRatedStock, RatedBucket
-from stock_analyze.scanners.ep.gates import BASELINE
-from stock_analyze.scanners.ep.runner import load_force_csv, merge_force_rows, run_ep_scan
+from stock_analyze.agents.catalyst import load_stocks_from_input
+from stock_analyze.agents.enrichment import load_vcp_stocks_from_input
+from stock_analyze.data.symbols import SymbolKey
+from stock_analyze.force_include import parse_force_include_text
+from stock_analyze.pipeline import (
+    execute_bo_enrichment,
+    execute_bo_scan,
+    execute_catalyst_enrich,
+    execute_ep_rating,
+    execute_ep_scan,
+    execute_vcp_enrichment,
+    execute_vcp_scan,
+    format_bo_rating_table,
+    format_rating_table,
+    format_vcp_rating_table,
+    strip_internal_keys,
+)
 
 logger = logging.getLogger(__name__)
 
+_QUESTIONARY_STYLE = questionary.Style(
+    [
+        ("qmark", "fg:cyan bold"),
+        ("question", "bold"),
+        ("answer", "fg:cyan"),
+        ("pointer", "fg:cyan bold"),
+        ("highlighted", "fg:cyan bold"),
+    ]
+)
+
+
+def _prompt_force_keys() -> Optional[list[SymbolKey]]:
+    """Prompt user to paste a symbol list; parse via force_include."""
+    from dotenv import load_dotenv
+
+    while True:
+        raw = questionary.text(
+            "Paste tickers (e.g. AAPL, MSFT, TSLA — messy lists OK)",
+            style=_QUESTIONARY_STYLE,
+        ).ask()
+        if raw is None:
+            return None
+        if not raw.strip():
+            questionary.print("Empty paste — please enter tickers.", style="bold fg:yellow")
+            continue
+
+        load_dotenv()
+        result = parse_force_include_text(raw)
+
+        if result.errors:
+            questionary.print("Parse errors:", style="bold fg:red")
+            for err in result.errors:
+                questionary.print(f"  • {err}", style="fg:red")
+            continue
+
+        if not result.symbols:
+            questionary.print("No symbols parsed. Try again.", style="bold fg:yellow")
+            continue
+
+        questionary.print(
+            f"Parsed {len(result.symbols)} symbols.", style="bold fg:green",
+        )
+        confirm = questionary.select(
+            "Use this list?",
+            choices=[
+                questionary.Choice("Yes", value="yes"),
+                questionary.Choice("Re-paste", value="no"),
+            ],
+            default="yes",
+            style=_QUESTIONARY_STYLE,
+        ).ask()
+        if confirm == "yes":
+            return result.symbols
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Stock analyze scanners")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description="Stock analyze scanners (Polygon.io)")
+    sub = parser.add_subparsers(dest="command", required=False)
 
     ep = sub.add_parser("ep", help="Episodic Pivot Agent 1 technical filter")
-    ep.add_argument("--csv", type=str, default=None, help="Force-include CSV (symbol,exchange)")
     ep.add_argument("--out", type=str, default=None, help="Write JSON to this path")
     ep.add_argument(
         "--select",
@@ -37,7 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="both",
         help="Which bucket(s) to include in output JSON (both computed always)",
     )
-    ep.add_argument("--limit", type=int, default=300, help="Max screener rows")
+    ep.add_argument("--limit", type=int, default=300, help="Max rows (historic compat)")
+    ep.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols (e.g. AAPL,MSFT). Prompted if omitted.",
+    )
     ep.add_argument("-v", "--verbose", action="store_true")
 
     cat = sub.add_parser("catalyst", help="Agent 2 catalyst intelligence (Tavily + OpenRouter)")
@@ -55,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     rate.add_argument("--in", dest="in_path", required=True, help="Agent 2 catalyst JSON or stock list")
     rate.add_argument("--out", type=str, default=None, help="Write full rated JSON to this path")
     rate.add_argument(
+        "--select",
+        choices=("baseline", "strict", "both"),
+        default="strict",
+        help="Which bucket to read when input is Agent 1-shaped (default: strict)",
+    )
+    rate.add_argument(
         "--min-rating",
         type=int,
         default=4,
@@ -62,48 +132,107 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum stars to print on console (default: 4). --out always has all ratings.",
     )
     rate.add_argument("-v", "--verbose", action="store_true")
+
+    # VCP pipeline subcommands
+    vcp = sub.add_parser("vcp", help="VCP full pipeline (scan + enrich + rate)")
+    vcp.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    vcp.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    vcp.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
+    vcp.add_argument("--no-gates", action="store_true", help="Skip Stage 2 + VCP gate filtering")
+    vcp.add_argument("-v", "--verbose", action="store_true")
+
+    vcp_scan = sub.add_parser("vcp-scan", help="VCP Agent 1 structural scan only")
+    vcp_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    vcp_scan.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    vcp_scan.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
+    vcp_scan.add_argument("--no-gates", action="store_true", help="Skip gate filtering")
+    vcp_scan.add_argument("-v", "--verbose", action="store_true")
+
+    vcp_enrich = sub.add_parser("vcp-enrich", help="VCP Agent 2-3 context enrichment")
+    vcp_enrich.add_argument("--in", dest="in_path", required=True, help="Agent 1 VCP scan JSON")
+    vcp_enrich.add_argument("--out", type=str, default=None, help="Write final rated JSON to this path")
+    vcp_enrich.add_argument(
+        "--min-rating",
+        type=int,
+        default=4,
+        choices=(1, 2, 3, 4, 5),
+        help="Minimum stars to print (default: 4)",
+    )
+    vcp_enrich.add_argument("-v", "--verbose", action="store_true")
+
+    # BO pipeline subcommands
+    bo = sub.add_parser("bo", help="BO full pipeline (scan + enrich + rate)")
+    bo.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    bo.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    bo.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
+    bo.add_argument("--no-gates", action="store_true", help="Skip BO gate filtering")
+    bo.add_argument("-v", "--verbose", action="store_true")
+
+    bo_scan = sub.add_parser("bo-scan", help="BO Agent 1 structural scan only")
+    bo_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
+    bo_scan.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
+    bo_scan.add_argument(
+        "--force", type=str, default=None,
+        help="Comma-separated symbols. Prompted if omitted.",
+    )
+    bo_scan.add_argument("--no-gates", action="store_true", help="Skip gate filtering")
+    bo_scan.add_argument("-v", "--verbose", action="store_true")
+
+    bo_enrich = sub.add_parser("bo-enrich", help="BO Agent 2-3 context enrichment")
+    bo_enrich.add_argument("--in", dest="in_path", required=True, help="Agent 1 BO scan JSON")
+    bo_enrich.add_argument("--out", type=str, default=None, help="Write final rated JSON to this path")
+    bo_enrich.add_argument(
+        "--min-rating",
+        type=int,
+        default=4,
+        choices=(1, 2, 3, 4, 5),
+        help="Minimum stars to print (default: 4)",
+    )
+    bo_enrich.add_argument("-v", "--verbose", action="store_true")
+
     return parser
+
+
+def _parse_force_arg(force_arg: Optional[str]) -> Optional[list[SymbolKey]]:
+    """Parse --force comma-separated string into SymbolKeys, or prompt."""
+    if force_arg and force_arg.strip():
+        from dotenv import load_dotenv
+        load_dotenv()
+        result = parse_force_include_text(force_arg)
+        return result.symbols
+    return _prompt_force_keys()
 
 
 def run_ep_command(
     *,
-    csv_path: Optional[str],
     out_path: Optional[str],
     select: Literal["baseline", "strict", "both"],
     limit: int,
+    force_arg: Optional[str] = None,
 ) -> int:
-    force_keys = load_force_csv(csv_path) if csv_path else []
-    screener_rows = fetch_us_ep_universe(
-        min_price=BASELINE.min_price,
-        min_gap_pct=BASELINE.min_gap_pct,
-        min_rvol10=BASELINE.min_rvol10,
-        limit=limit,
-    )
-
-    force_rows: list = []
-    if force_keys:
-        force_rows = fetch_symbols(force_keys)
-        found_keys = {row_symbol_key(r) for r in force_rows}
-        for sym, exch in force_keys:
-            if (sym, exch) not in found_keys:
-                try:
-                    force_rows.append(enrich_from_ohlcv(sym, exch))
-                except Exception as exc:
-                    logger.warning("Force-include enrich failed for %s:%s: %s", exch, sym, exc)
-
-    rows, force_set, source = merge_force_rows(screener_rows, force_keys, force_rows)
-    result = run_ep_scan(
-        rows=rows,
-        as_of=date.today(),
-        force_symbols=force_set,
-        universe_source=source,
-    )
-    payload = result.model_dump_selected(select)
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_ep_scan(force_keys=force_keys, select=select, limit=limit)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
     text = json.dumps(payload, indent=2)
-
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
-        print(f"Wrote {out_path} (baseline={result.baseline.count}, strict={result.strict.count})")
+        print(
+            f"Wrote {out_path} "
+            f"(baseline={counts.get('baseline', '?')}, strict={counts.get('strict', '?')})"
+        )
     else:
         print(text)
     return 0
@@ -115,32 +244,19 @@ def run_catalyst_command(
     out_path: Optional[str],
     select: Literal["baseline", "strict", "both"],
 ) -> int:
-    load_dotenv()
     payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
     stocks = load_stocks_from_input(payload, select=select)
-    enriched = enrich_with_catalysts(stocks)
-    bucket = CatalystBucket(count=len(enriched), stocks=enriched)
-    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+    bucket = execute_catalyst_enrich(stocks)
+    text = json.dumps(bucket, indent=2)
 
-    found = sum(1 for s in enriched if s.catalyst_found)
-    unknown = len(enriched) - found
+    found = sum(1 for s in bucket.get("stocks") or [] if s.get("catalyst_found"))
+    unknown = len(bucket.get("stocks") or []) - found
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
-        print(f"Wrote {out_path} (count={bucket.count}, catalyst_found={found}, unknown={unknown})")
+        print(f"Wrote {out_path} (count={bucket.get('count')}, catalyst_found={found}, unknown={unknown})")
     else:
         print(text)
     return 0
-
-
-def _format_rating_table(stocks: list[EpRatedStock]) -> str:
-    if not stocks:
-        return "(no names at this min-rating)"
-    lines = ["stars  symbol   type       rationale"]
-    for s in stocks:
-        lines.append(
-            f"{s.ep_rating}★     {s.symbol:<8} {s.catalyst_type:<10} {s.ep_rationale}"
-        )
-    return "\n".join(lines)
 
 
 def run_rate_command(
@@ -148,21 +264,193 @@ def run_rate_command(
     in_path: str,
     out_path: Optional[str],
     min_rating: int,
+    select: Literal["baseline", "strict", "both"] = "strict",
 ) -> int:
-    load_dotenv()
     payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
-    stocks = load_stocks_from_input(payload, select="strict")
-    rated = rate_ep_catalysts(stocks)
-    bucket = RatedBucket(count=len(rated), stocks=rated)
-    text = json.dumps(bucket.model_dump(mode="json"), indent=2)
+    stocks = load_stocks_from_input(payload, select=select)
+    bucket, rated = execute_ep_rating(stocks)
+    text = json.dumps(bucket, indent=2)
 
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
         matches = sum(1 for s in rated if s.ep_catalyst_match)
-        print(f"Wrote {out_path} (count={bucket.count}, ep_catalyst_match={matches})")
+        print(f"Wrote {out_path} (count={bucket.get('count')}, ep_catalyst_match={matches})")
 
-    visible = [s for s in rated if s.ep_rating >= min_rating]
-    print(_format_rating_table(visible))
+    print(format_rating_table(rated, min_rating=min_rating))
+    return 0
+
+
+def run_vcp_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+    force_arg: Optional[str] = None,
+) -> int:
+    """Run full VCP pipeline: scan + enrichment."""
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_vcp_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+
+    ratings = payload.get("ratings") or []
+    passing = [r for r in ratings if r.get("structural_rating", 0) >= 4]
+    if passing:
+        print(f"\nRunning enrichment on {len(passing)} passing stocks...")
+        result = execute_vcp_enrichment(passing)
+        rated = result["rated_stocks"]
+        print(format_vcp_rating_table(rated, min_rating=3))
+
+    return 0
+
+
+def run_vcp_scan_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+    force_arg: Optional[str] = None,
+) -> int:
+    """Run VCP Agent 1 structural scan only."""
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_vcp_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+    return 0
+
+
+def run_vcp_enrich_command(
+    *,
+    in_path: str,
+    out_path: Optional[str],
+    min_rating: int,
+) -> int:
+    """Run VCP Agent 2-3 context enrichment from Agent 1 JSON."""
+    payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
+    stocks = load_vcp_stocks_from_input(payload)
+    result = execute_vcp_enrichment(stocks)
+    rated = result["rated_stocks"]
+    text = json.dumps(result["agent3"], indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        matches = sum(1 for s in rated if s.final_rating >= 4)
+        print(f"Wrote {out_path} (count={len(rated)}, 4★+={matches})")
+
+    print(format_vcp_rating_table(rated, min_rating=min_rating))
+    return 0
+
+
+def run_bo_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+    force_arg: Optional[str] = None,
+) -> int:
+    """Run full BO pipeline: scan + enrichment."""
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_bo_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+
+    ratings = payload.get("ratings") or []
+    passing = [r for r in ratings if r.get("rating", 0) >= 4]
+    if passing:
+        print(f"\nRunning enrichment on {len(passing)} passing stocks...")
+        result = execute_bo_enrichment(passing)
+        rated = result["rated_stocks"]
+        print(format_bo_rating_table(rated, min_rating=3))
+
+    return 0
+
+
+def run_bo_scan_command(
+    *,
+    out_path: Optional[str],
+    limit: int,
+    apply_gates: bool = True,
+    force_arg: Optional[str] = None,
+) -> int:
+    """Run BO Agent 1 structural scan only."""
+    force_keys = _parse_force_arg(force_arg)
+    if force_keys is None:
+        print("Cancelled.")
+        return 2
+    raw = execute_bo_scan(force_keys=force_keys, limit=limit, apply_gates=apply_gates)
+    counts = raw.get("_counts") or {}
+    payload = strip_internal_keys(raw)
+    text = json.dumps(payload, indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        print(
+            f"Wrote {out_path} "
+            f"(5★={counts.get('5', '?')}, 4★={counts.get('4', '?')}, 3★={counts.get('3', '?')})"
+        )
+    else:
+        print(text)
+    return 0
+
+
+def run_bo_enrich_command(
+    *,
+    in_path: str,
+    out_path: Optional[str],
+    min_rating: int,
+) -> int:
+    """Run BO Agent 2-3 context enrichment from Agent 1 JSON."""
+    payload = json.loads(Path(in_path).read_text(encoding="utf-8"))
+    stocks = load_vcp_stocks_from_input(payload)
+    result = execute_bo_enrichment(stocks)
+    rated = result["rated_stocks"]
+    text = json.dumps(result["agent3"], indent=2)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        matches = sum(1 for s in rated if s.final_rating >= 4)
+        print(f"Wrote {out_path} (count={len(rated)}, 4★+={matches})")
+
+    print(format_bo_rating_table(rated, min_rating=min_rating))
     return 0
 
 
@@ -173,13 +461,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(levelname)s %(message)s",
     )
+    for _name in ("httpx", "httpcore", "openai", "urllib3", "tavily", "polygon"):
+        if not getattr(args, "verbose", False):
+            logging.getLogger(_name).setLevel(logging.WARNING)
+
+    if not args.command:
+        from stock_analyze.interactive import run_interactive
+
+        return run_interactive()
+
     if args.command == "ep":
         try:
             return run_ep_command(
-                csv_path=args.csv,
                 out_path=args.out,
                 select=args.select,
                 limit=args.limit,
+                force_arg=getattr(args, "force", None),
             )
         except Exception as exc:
             logger.error("EP scan failed: %s", exc)
@@ -200,9 +497,81 @@ def main(argv: Optional[list[str]] = None) -> int:
                 in_path=args.in_path,
                 out_path=args.out,
                 min_rating=args.min_rating,
+                select=args.select,
             )
         except Exception as exc:
             logger.error("EP rating failed: %s", exc)
             return 1
+
+    if args.command == "vcp":
+        try:
+            return run_vcp_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
+            )
+        except Exception as exc:
+            logger.error("VCP pipeline failed: %s", exc)
+            return 1
+
+    if args.command == "vcp-scan":
+        try:
+            return run_vcp_scan_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
+            )
+        except Exception as exc:
+            logger.error("VCP scan failed: %s", exc)
+            return 1
+
+    if args.command == "vcp-enrich":
+        try:
+            return run_vcp_enrich_command(
+                in_path=args.in_path,
+                out_path=args.out,
+                min_rating=args.min_rating,
+            )
+        except Exception as exc:
+            logger.error("VCP enrich failed: %s", exc)
+            return 1
+
+    if args.command == "bo":
+        try:
+            return run_bo_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
+            )
+        except Exception as exc:
+            logger.error("BO pipeline failed: %s", exc)
+            return 1
+
+    if args.command == "bo-scan":
+        try:
+            return run_bo_scan_command(
+                out_path=args.out,
+                limit=args.limit,
+                apply_gates=not getattr(args, "no_gates", False),
+                force_arg=getattr(args, "force", None),
+            )
+        except Exception as exc:
+            logger.error("BO scan failed: %s", exc)
+            return 1
+
+    if args.command == "bo-enrich":
+        try:
+            return run_bo_enrich_command(
+                in_path=args.in_path,
+                out_path=args.out,
+                min_rating=args.min_rating,
+            )
+        except Exception as exc:
+            logger.error("BO enrich failed: %s", exc)
+            return 1
+
     parser.error(f"Unknown command: {args.command}")
     return 2

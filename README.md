@@ -16,9 +16,42 @@ pip install -r requirements.txt
 
 Needs network access to TradingView’s screener API. No API key for the EP scan.
 
+## Daily Run (Phase 4 — recommended)
+
+Interactive wizard (arrow keys + Enter). Chains Agent 1 → 2 → 3 and stamps **Run Artifacts**.
+
+```bash
+# Windows
+.\run.ps1
+
+# macOS / Linux
+./run.sh
+
+# Or directly
+python -m stock_analyze
+```
+
+**Auto Run:** Pipeline Type (**Daily EP scan**) → Force Include (**Skip** / **Paste symbols…**) → Gate (**Strict (recommended)** / Baseline / Both) → run name → full chain. Paste confirmed → screener off; Agent 1 runs only on pasted names and **always** applies Gate (no “Run all”).
+
+**Manual Run:** Force Include first. **Skip** → Gate → Catalyst yes/no (no ⇒ Agent 1 only; EP Rating does not run) → Analysis Method (**EP Rating**) → run name. **Paste confirmed** → choose **Apply Gate filter** (then Gate select) or **Run all pasted** (skip gates; no Gate select) → Catalyst / Analysis → run name.
+
+**Force Include paste:** free-text list (e.g. `( JHX, KGC, LUNR, MB, )`) → cheap OpenRouter LLM cleans to tickers → shows accepted + rejected/errors → confirm → Universe is paste-only (screener off). Skip leaves today’s screener → Gate → Agent 1 path. Needs `OPENROUTER_API_KEY` only when pasting (Skip does not).
+
+Outputs land under:
+
+```
+output/<YYYY-MM-DD>/<HHMMSS>_<name>/
+  <name>_agent1.json
+  <name>_agent2.json   # if Catalyst ran
+  <name>_agent3.json   # if EP Rating ran
+  run_meta.json
+```
+
+Legacy one-shot commands (`ep` / `catalyst` / `rate`) remain for debugging. Scheduling can later call `run_daily(RunConfig(...))` from `stock_analyze.pipeline` (no scheduler wired yet).
+
 ## EP scan (Agent 1)
 
-Run from `mcp_stock_analyze` after the cash open (RTH gap).
+Legacy / debug entry. Prefer the Daily Run wizard above for the after-close habit.
 
 ```bash
 # Both buckets → file
@@ -30,12 +63,11 @@ python -m stock_analyze ep --select strict --out ep_strict.json
 # Baseline only in the file
 python -m stock_analyze ep --select baseline --out ep_baseline.json
 
-# Force-include tickers from CSV, write Strict bucket
-python -m stock_analyze ep --csv force.csv --select strict --out ep_strict.json
-
 # Cap screener rows / verbose logs
 python -m stock_analyze ep --select strict --out ep_strict.json --limit 300 -v
 ```
+
+Force Include paste lives on the Daily Run wizard (not on legacy `ep`).
 
 ### CLI flags
 
@@ -43,19 +75,8 @@ python -m stock_analyze ep --select strict --out ep_strict.json --limit 300 -v
 |------|---------|---------|
 | `--out PATH` | stdout | Write JSON to file |
 | `--select` | `both` | Which top-level bucket(s) to include: `baseline`, `strict`, or `both` |
-| `--csv PATH` | none | Force-include CSV (`symbol,exchange`) |
 | `--limit N` | `300` | Max screener rows fetched |
 | `-v` | off | Debug logging |
-
-### Force-include CSV
-
-```csv
-symbol,exchange
-AAPL,NASDAQ
-TSLA,NASDAQ
-```
-
-Missing `exchange` defaults to `NASDAQ`. Symbols are merged with the screener universe and evaluated even if they did not appear in the screen.
 
 ## Gates
 
@@ -173,7 +194,9 @@ python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json
 python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json --min-rating 1
 ```
 
-### Daily chain
+### Daily chain (legacy three-command path)
+
+Prefer `python -m stock_analyze` (wizard). Manual equivalent:
 
 ```bash
 python -m stock_analyze ep --select strict --out ep_strict.json
@@ -191,7 +214,11 @@ stock_analyze/
   models/         # EP + catalyst + rating JSON schemas
   scanners/
     ep/           # gates, metrics, runner
+  pipeline.py     # Daily Run (stamped Agent 1→2→3)
+  interactive.py  # arrow-key wizard
   cli.py
+run.ps1 / run.sh  # launch wizard
+output/           # stamped Run Artifacts (gitignored)
 tests/
 ```
 
@@ -205,8 +232,4 @@ python -m pytest tests/ -v
 
 ## Schedule
 
-Point Task Scheduler / cron at the CLI after the US cash open, e.g.:
-
-```bash
-python -m stock_analyze ep --select strict --out /path/to/ep_strict.json
-```
+Not wired yet. When you add Task Scheduler / cron after the US cash close, prefer a future non-interactive entry such as `python -m stock_analyze run --auto --select strict --name daily` (not implemented), which should call the same pipeline core (`stock_analyze.pipeline.run_daily`). Keep the wizard for desk use.
