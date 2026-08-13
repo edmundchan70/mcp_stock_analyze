@@ -237,3 +237,16 @@ When a user pastes symbols, the pipeline resolves them via Polygon.io:
 **Hard caps (code, down-only):** `UNKNOWN`/`catalyst_found=false` → max 2; `rvol10 < 3` → max 4; `PR` → max 3; `CONTRACT`/`FDA` → max 4; soft-fail → 1. **5★ reserved for EARNINGS/GUIDANCE.**
 
 See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
+
+---
+
+## Full-stack dashboard (Next.js + FastAPI)
+
+| Term | Meaning |
+|------|---------|
+| **Run (DB record)** | A persisted scan execution in the `runs` table: `id`, `name`, `pipeline_type`, `status`, `params` (JSONB), `counts` (JSONB), `error`, `started_at`, `finished_at`. Status lifecycle: `queued → running → succeeded \| failed`. Managed by `Repo` (`server/app/db.py`). |
+| **Run Artifacts (DB)** | The `run_artifacts` table: one JSONB `payload` per `(run_id, stage)` where stage ∈ `meta` \| `agent1` \| `agent2` \| `agent3`. Upserted from `read_artifacts()` after `run_daily()` finishes (`server/app/jobs.py`). |
+| **EventReporter** | `RunProgress` duck-type adapter (`server/app/reporter.py`) that marshals `stage` / `stage_done` / `fail` / `begin_ticker` / `ticker` / `end_ticker` / `console.print` calls onto an asyncio.Queue via `loop.call_soon_threadsafe` (pipeline runs in a worker thread). |
+| **JobManager** | Registry of in-flight runs: one event queue + one `asyncio.Task` per run id (`server/app/jobs.py:JobManager`). |
+| **SSE Progress** | `GET /api/runs/{id}/events` streams `progress` events (each with a `type` field = reporter event) and a terminal `done`/`failed` event; replays a terminal event from the DB if the run already finished. |
+| **Scan Job** | `run_scan_job()`: builds `RunConfig` from the request body (sharing `parse_force_include_text` with the CLI), runs `run_daily()` via `asyncio.to_thread`, then reads artifacts back and persists to Postgres. |

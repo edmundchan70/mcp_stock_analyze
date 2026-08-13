@@ -4,6 +4,66 @@ Local stock scanners. **Agent 1** is an Episodic Pivot (EP) technical filter (Tr
 
 Domain terms: [glossary.md](glossary.md), [CONTEXT.md](CONTEXT.md).
 
+## Full-stack dashboard (Next.js + FastAPI)
+
+The scanners are wrapped in a single-user web dashboard:
+
+- **`server/`** — a FastAPI service that runs the same `run_daily()` pipeline as a
+  background job and persists runs to **Neon Postgres** (JSONB). It streams live
+  progress over SSE.
+- **`web/`** — a Next.js (App Router + Tailwind) frontend: run history, a
+  "New scan" form, and a live progress + results view.
+- **`stock_analyze/`** — the existing Python pipeline, reused unchanged (now an
+  installable package via the root `pyproject.toml`).
+
+### Architecture
+
+```
+web (Next.js) ── REST + SSE ──> server (FastAPI)
+                                   │ asyncio.to_thread
+                                   ▼
+                              run_daily(RunConfig, reporter=EventReporter)
+                                   │
+                                   ▼
+                              output/<date>/<time>_<name>/  (JSON artifacts)
+                                   │ read back + persist
+                                   ▼
+                              Neon Postgres (runs + run_artifacts JSONB)
+```
+
+### Run it
+
+```bash
+# 1. Install the Python package (once)
+pip install -e .
+
+# 2. Start the FastAPI server (needs DATABASE_URL + pipeline API keys in .env)
+cd server
+pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+
+# 3. Start the frontend (in another terminal)
+cd web
+npm install
+cp .env.local.example .env.local   # set NEXT_PUBLIC_API_URL
+npm run dev                         # http://localhost:3000
+```
+
+The API is documented at `http://localhost:8000/docs`.
+
+### Tests
+
+```bash
+# Server: core (migrated) + new server tests together
+cd server && pytest
+
+# Web
+cd web && npm test
+```
+
+The existing `tests/` suite was migrated to `server/tests/core/`; `pytest.ini`
+markers moved into `server/pyproject.toml` under `[tool.pytest.ini_options]`.
+
 ## Setup
 
 ```bash
@@ -208,18 +268,18 @@ python -m stock_analyze rate --in ep_catalyst.json --out ep_rated.json
 ## Layout
 
 ```
-stock_analyze/
-  agents/         # Agent 2 catalyst + Agent 3 EP rating
-  data/           # TradingView screener + OHLCV helpers
-  models/         # EP + catalyst + rating JSON schemas
-  scanners/
-    ep/           # gates, metrics, runner
-  pipeline.py     # Daily Run (stamped Agent 1→2→3)
-  interactive.py  # arrow-key wizard
+stock_analyze/            # the scan pipeline (now an installable package)
+  agents/                 # Agent 2 catalyst + Agent 3 EP rating + VCP/BO enrichment
+  data/                   # Polygon.io data helpers
+  models/                 # EP + VCP + BO + catalyst + rating JSON schemas
+  scanners/               # ep/ vcp/ bo/ gates, metrics, runner
+  pipeline.py             # Daily Run (stamped Agent 1→2→3)
+  interactive.py          # arrow-key wizard
   cli.py
-run.ps1 / run.sh  # launch wizard
-output/           # stamped Run Artifacts (gitignored)
-tests/
+server/                   # FastAPI service (app/ + tests/)
+web/                      # Next.js frontend (app/ + components/ + lib/)
+run.ps1 / run.sh          # launch wizard
+output/                   # stamped Run Artifacts (gitignored)
 ```
 
 VCP scripts (`vcp_scan.py`, `vcp_analyzer.py`, …) remain at the repo root; they are separate from the EP scanner.
@@ -227,7 +287,11 @@ VCP scripts (`vcp_scan.py`, `vcp_analyzer.py`, …) remain at the repo root; the
 ## Tests
 
 ```bash
-python -m pytest tests/ -v
+# Server: migrated core suite + new server tests (run from server/)
+cd server && pytest
+
+# Web
+cd web && npm test
 ```
 
 ## Schedule
