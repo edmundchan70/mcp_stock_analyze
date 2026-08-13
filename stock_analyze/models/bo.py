@@ -66,6 +66,17 @@ class BoSetupRating(BaseModel):
         default=0.0, description="Secondary report field: close distance from 50d SMA (%)"
     )
 
+    # ── Funnel fields (computed in runner.py from OHLCV) ─────────────
+    adv_20d: float = Field(default=0.0, description="20-day average dollar volume")
+    ema10_dist_pct: float = Field(default=0.0, description="|close-EMA10| / EMA10 * 100")
+    ema10_rising: bool = Field(default=False, description="EMA10[-1] > EMA10[-4]")
+    dryup_vol_ratio: float = Field(default=1.0, description="Base-end vol / SMA20 pre-base vol")
+    tightness: float = Field(default=999.0, description="Last-bar range / ADR20")
+
+    # ── Funnel scoring (populated by apply_funnel after scoring) ─────
+    q_base: int = Field(default=0, description="Q_base composite score (0-100)")
+    funnel_stars: int = Field(default=0, description="Funnel star tier from q_base_to_stars (0/3/4/5)")
+
     # Meta
     base_high: float = Field(default=0.0, description="Base high price")
     base_low: float = Field(default=0.0, description="Base low price")

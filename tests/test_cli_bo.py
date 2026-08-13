@@ -53,6 +53,31 @@ class TestBoSubcommands:
         args = parser.parse_args(["bo", "--force", "AAPL,MSFT,TSLA"])
         assert args.force == "AAPL,MSFT,TSLA"
 
+    def test_bo_accepts_profile(self):
+        parser = build_parser()
+        args = parser.parse_args(["bo", "--profile", "best"])
+        assert args.profile == "best"
+
+    def test_bo_profile_default_none(self):
+        parser = build_parser()
+        args = parser.parse_args(["bo", "--force", "AAPL"])
+        assert args.profile is None
+
+    def test_bo_profile_invalid_choice_rejected(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["bo", "--profile", "invalid"])
+
+    def test_bo_label_is_classic(self):
+        parser = build_parser()
+        help_text = parser.format_help()
+        assert "Qullamaggie BO (Classic)" in help_text
+
+    def test_bo_scan_label_is_raw(self):
+        parser = build_parser()
+        help_text = parser.format_help()
+        assert "raw, no funnel" in help_text
+
     def test_bo_scan_accepts_force(self):
         parser = build_parser()
         args = parser.parse_args(["bo-scan", "--force", "AAPL,MSFT"])

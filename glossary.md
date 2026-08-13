@@ -44,6 +44,9 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **Run Progress** | Live terminal timeline of a Daily Run: persistent stage lines (Agent 1 / Catalyst / EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only, not persisted to Run Artifacts. The batch OHLCV phase gets its own Rich progress bar with elapsed time and ETA, throttled every 5 fetches to avoid flicker. (`progress.py:49`) |
 | **Polygon.io** | Official stock market data API (`polygon-api-client` SDK). Replaces TradingView (tvDatafeed + tradingview_screener) as the sole data source. Provides Ticker Details (symbol resolution, exchange, market cap) and daily aggregate bars (OHLCV). Polyfill for the removed Screener Pre-Filter via `passes_market_cap_gate()`. Config via `POLYGON_API_KEY` in `.env`. (`polygon.py:24`) |
 | **Market Cap Gate** | Post-screener replacement: `passes_market_cap_gate()` enforces `market_cap >= MIN_MARKET_CAP` ($100M). None/missing always rejects (conservative). Applied post-symbol-resolution, pre-OHLCV-fetch in VCP/BO runners. (`scanners/vcp/gates.py:33`) |
+| **Run Log** | `run.log` file written to the run directory alongside JSON artifacts. Captures all `logger` output (INFO, WARNING, ERROR) from every module in the pipeline chain (Polygon OHLCV, scanners, enrichment agents, rating agents) with timestamps and module names. Added via `FileHandler` to root logger in `_run_log()` context manager (`pipeline.py:38`), removed on completion/failure. |
+| **Pre-market Data** | Minute-level aggregate bars for the current day's pre-market window (4:00 AM – 9:30 AM Eastern). Fetched via `fetch_premarket_aggs(symbol)` (`polygon.py:380`) using Polygon.io `get_aggs(timespan="minute")` with Unix timestamp millisecond boundaries. Returns DataFrame with open/high/low/close/volume. Summarized by `get_premarket_data(symbol)` returning premarket high/low/close/volume/VWAP. |
+| **Premarket Window** | 4:00 AM – 9:30 AM Eastern Time. Hardcoded constants in `polygon.py:18-21`: `_PREMARKET_START_HOUR=4`, `_PREMARKET_END_HOUR=9`, `_PREMARKET_END_MINUTE=30`. Window boundaries computed daily in `_premarket_window()` (`polygon.py:372`) using ET-aware datetime arithmetic and converted to Unix millisecond timestamps for Polygon API. |
 
 ### EP Agent Pipeline
 
@@ -173,13 +176,19 @@ When a user pastes symbols, the pipeline resolves them via Polygon.io:
 | **Variant** | `classic` (breakout above base's KDE pivot) or `lower_base` (two-base sequence: base A higher high → shallower base B below A's high → close above B's high but below A's high). `lower_base` capped at 4★; only `classic` reaches 5★. `classify_variant()` (`metrics.py:410`). |
 | **BO Setup Rating** | 3–5★ pure-math rating from 9 essential checks (incl. volume signature = dry-up ≤ 0.5× then surge ≥ 1.5×) + surge-threshold tiers + variant + extension cap. Deterministic, no LLM. `score_bo_setup()` (`metrics.py:432`). |
 | **BO Liquidity Gate** | Reuses VCP `passes_liquidity_gate()` / `MIN_ADV_DOLLAR` ($10M) — always enforced post-OHLCV-fetch. |
-| **BO Gate** | Post-detection: `rating ≥ 4` survives to enrichment. `passes_bo_gate()` (`gates.py:18`). |
-| **BO Down-Only Caps** | Reuses VCP `apply_vcp_caps()` — 5★→4★ if non-leader or declining sector; 4★→3★ if declining sector; 3★ stays 3★. `build_bo_rated_stock()` (`gates.py:23`). |
+| **BO Gate** | Post-detection gate (legacy): `rating ≥ 4` survives. Replaced by BO Funnel Gate. `passes_bo_gate()` (`gates.py:18`). |
+| **BO Funnel Gate** | 5-gate pipeline (G1 prior_impulse → G2 20d ADV$ → G3 EMA10 proximity + rising → G4 base duration → G5 dry-up scoring-only) + Q_base scoring ≥ 60 floor. Replaces the single `rating >= 4` structural gate for BO survivors. `apply_funnel()` (`watchlist.py:118`). |
+| **BO Funnel Profile** | One of `best` (ADV $50M / EMA 5% / Base 40d), `moderate-lose` (ADV $50M / EMA 8% / Base 40d), or `widen` (ADV $30M / EMA 8% / Base 40d). All disable dry-up as a hard gate (scoring-only). `WATCHLIST_PROFILES` (`watchlist.py:19`). |
+| **Q_base** | Composite quality score (max 100) from 6 parameters: VCI, higher lows count, tightness, prior impulse %, volume dry-up ratio, and EMA10 surfing distance. Drives funnel star tier: 90→5★, 75→4★, 60→3★. `compute_q_base()` (`watchlist.py:54`). |
+| **Tradable Count** | Survivors with `funnel_stars ≥ 3` (Q_base ≥ 60). Triggers gap-options prompt when < 5. `tradable_count()` (`watchlist.py:178`). |
+| **Gap-Options Prompt** | Interactive (wizard + CLI TTY) free-loop prompt shown when tradable survivors < 5. User picks best/moderate-lose/widen repeatedly; "Keep what I have" proceeds with current survivors. CLI `--profile` flag skips the prompt. |
+| **Tightness** | Last-bar daily range as a fraction of ADR20: `(high[-1] − low[-1]) / close[-1] × 100 / ADR20`. Low tightness contributes positively to Q_base. Computed in `run_bo_scan()` (`runner.py:173`). |
+| **BO Down-Only Caps** | Reuses VCP `apply_vcp_caps()` — applied to `funnel_stars` (not structural `rating`) when funnel stars > 0. 5★→4★ if non-leader or declining sector; 4★→3★ if declining sector; 3★ stays 3★. `build_bo_rated_stock()` (`gates.py:28`). |
 | **BO Context Enrichment** | Agent 2 — reuses VCP Tavily dual-query enrichment as-is (`enrich_with_vcp_context`); no BO-specific agent. |
 | **BO Batch OHLCV Fetch** | Same `batch_get_stock_data()` as VCP (300 daily bars, Polygon.io REST API). `run_bo_scan()` (`runner.py:81`). |
-| **BO Auto Run** | Wizard: Pipeline=BO → Screener (Stage 2 pre-filter) → Force Include (optional) → `apply_gates=True` → run_daily. Skips EP gate select, identical to VCP flow. |
-| **BO Manual — Apply Gate** | Wizard: Pipeline=BO → Force Include paste → "Apply Gate" → BO structural gate → survivors to enrichment. |
-| **BO Manual — Run All Pasted** | Wizard: Pipeline=BO → Force Include paste → "Run all pasted" → skip gates → ALL pasted continue to enrichment. |
+| **BO Auto Run** | Wizard: Pipeline=Qullamaggie BO (Classic) → Force Include → Funnel gate (best) → gap-options prompt if tradable < 5 → enrichment. |
+| **BO Manual — Apply Gate** | Wizard: Pipeline=Qullamaggie BO (Classic) → Force Include paste → "Apply Gate" → Funnel gate → gap-options prompt → survivors to enrichment. |
+| **BO Manual — Run All Pasted** | Wizard: Pipeline=Qullamaggie BO (Classic) → Force Include paste → "Run all pasted" → skip gates → ALL pasted continue to enrichment. |
 
 ### BO Agent Pipeline
 

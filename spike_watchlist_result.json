@@ -1,0 +1,171 @@
+{
+  "all_pass": 11,
+  "gate": {
+    "passed": {
+      "g1_impulse": 57,
+      "g2_adv": 35,
+      "g3_ema10": 19,
+      "g4_base": 54,
+      "g5_dryup": 57
+    },
+    "failed": {
+      "g1_impulse": 0,
+      "g2_adv": 22,
+      "g3_ema10": 38,
+      "g4_base": 3,
+      "g5_dryup": 0
+    }
+  },
+  "candidates": [
+    {
+      "symbol": "ACHC",
+      "stars": 3,
+      "q_base": 65,
+      "prior_impulse_pct": 138.4,
+      "adv_20d": 93573600.0,
+      "ema10_dist_pct": 1.29,
+      "base_duration": 19,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6393,
+      "higher_lows": 1,
+      "tightness": 0.529
+    },
+    {
+      "symbol": "BB",
+      "stars": 3,
+      "q_base": 63,
+      "prior_impulse_pct": 301.6,
+      "adv_20d": 148501268.0,
+      "ema10_dist_pct": 0.69,
+      "base_duration": 40,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6354,
+      "higher_lows": 1,
+      "tightness": 0.568
+    },
+    {
+      "symbol": "DELL",
+      "stars": 3,
+      "q_base": 65,
+      "prior_impulse_pct": 224.0,
+      "adv_20d": 2713213580.0,
+      "ema10_dist_pct": 4.28,
+      "base_duration": 40,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.5515,
+      "higher_lows": 1,
+      "tightness": 0.68
+    },
+    {
+      "symbol": "FBRX",
+      "stars": 3,
+      "q_base": 65,
+      "prior_impulse_pct": 391.3,
+      "adv_20d": 157856487.0,
+      "ema10_dist_pct": 4.29,
+      "base_duration": 21,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6083,
+      "higher_lows": 2,
+      "tightness": 0.012
+    },
+    {
+      "symbol": "IRDM",
+      "stars": 0,
+      "q_base": 56,
+      "prior_impulse_pct": 135.2,
+      "adv_20d": 65818322.0,
+      "ema10_dist_pct": 1.94,
+      "base_duration": 40,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6279,
+      "higher_lows": 2,
+      "tightness": 0.948
+    },
+    {
+      "symbol": "MANE",
+      "stars": 3,
+      "q_base": 60,
+      "prior_impulse_pct": 196.4,
+      "adv_20d": 93894423.0,
+      "ema10_dist_pct": 0.94,
+      "base_duration": 13,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6007,
+      "higher_lows": 1,
+      "tightness": 0.727
+    },
+    {
+      "symbol": "MRVL",
+      "stars": 0,
+      "q_base": 40,
+      "prior_impulse_pct": 318.1,
+      "adv_20d": 4685984226.0,
+      "ema10_dist_pct": 1.72,
+      "base_duration": 17,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6355,
+      "higher_lows": 1,
+      "tightness": 1.417
+    },
+    {
+      "symbol": "MXL",
+      "stars": 0,
+      "q_base": 45,
+      "prior_impulse_pct": 696.2,
+      "adv_20d": 299872712.0,
+      "ema10_dist_pct": 2.92,
+      "base_duration": 27,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6431,
+      "higher_lows": 1,
+      "tightness": 1.028
+    },
+    {
+      "symbol": "NAVN",
+      "stars": 0,
+      "q_base": 55,
+      "prior_impulse_pct": 168.7,
+      "adv_20d": 78595016.0,
+      "ema10_dist_pct": 4.18,
+      "base_duration": 40,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6187,
+      "higher_lows": 1,
+      "tightness": 0.744
+    },
+    {
+      "symbol": "PENG",
+      "stars": 0,
+      "q_base": 51,
+      "prior_impulse_pct": 368.0,
+      "adv_20d": 195758875.0,
+      "ema10_dist_pct": 0.73,
+      "base_duration": 15,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.6346,
+      "higher_lows": 1,
+      "tightness": 0.842
+    },
+    {
+      "symbol": "SLS",
+      "stars": 0,
+      "q_base": 55,
+      "prior_impulse_pct": 298.6,
+      "adv_20d": 75566662.0,
+      "ema10_dist_pct": 3.24,
+      "base_duration": 29,
+      "dryup_vol_ratio": 1.0,
+      "vci": 0.5949,
+      "higher_lows": 1,
+      "tightness": 1.064
+    }
+  ],
+  "params": {
+    "adv": 50000000,
+    "ema": 5.0,
+    "dryup_enabled": false,
+    "dryup_ratio": null,
+    "base": 40
+  }
+}

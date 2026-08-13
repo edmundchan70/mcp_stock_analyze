@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -167,17 +168,23 @@ def build_parser() -> argparse.ArgumentParser:
     vcp_enrich.add_argument("-v", "--verbose", action="store_true")
 
     # BO pipeline subcommands
-    bo = sub.add_parser("bo", help="BO full pipeline (scan + enrich + rate)")
+    bo = sub.add_parser("bo", help="Qullamaggie BO (Classic) — full pipeline (scan + funnel + enrich)")
     bo.add_argument("--out", type=str, default=None, help="Write JSON to this path")
     bo.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
     bo.add_argument(
         "--force", type=str, default=None,
         help="Comma-separated symbols. Prompted if omitted.",
     )
-    bo.add_argument("--no-gates", action="store_true", help="Skip BO gate filtering")
+    bo.add_argument("--no-gates", action="store_true", help="Skip funnel gate filtering")
+    bo.add_argument(
+        "--profile",
+        choices=["best", "moderate-lose", "widen"],
+        default=None,
+        help="Funnel profile (skip prompt). Default: best (headless) or prompt (TTY).",
+    )
     bo.add_argument("-v", "--verbose", action="store_true")
 
-    bo_scan = sub.add_parser("bo-scan", help="BO Agent 1 structural scan only")
+    bo_scan = sub.add_parser("bo-scan", help="BO Agent 1 structural scan only (raw, no funnel)")
     bo_scan.add_argument("--out", type=str, default=None, help="Write JSON to this path")
     bo_scan.add_argument("--limit", type=int, default=300, help="Max screener rows (historic compat)")
     bo_scan.add_argument(
@@ -210,6 +217,47 @@ def _parse_force_arg(force_arg: Optional[str]) -> Optional[list[SymbolKey]]:
         result = parse_force_include_text(force_arg)
         return result.symbols
     return _prompt_force_keys()
+
+
+def _prompt_bo_profile(ratings: list) -> Optional[str]:
+    """Prompt user to select a funnel profile (TTY mode)."""
+    from stock_analyze.scanners.bo.watchlist import WATCHLIST_PROFILES, apply_funnel
+
+    # Show best profile first
+    funnel = apply_funnel(ratings, "best")
+    survivors = funnel.survivors
+    by_star = {}
+    for c in survivors:
+        s = c["stars"]
+        by_star[s] = by_star.get(s, 0) + 1
+    print(f"\nDefault profile (best): {len(survivors)} survivors")
+    if survivors:
+        for s in [5, 4, 3]:
+            if s in by_star:
+                print(f"  {s}★: {by_star[s]}")
+    else:
+        print("  No survivors — consider loosening the funnel.")
+
+    profile = questionary.select(
+        "Choose a funnel profile (or skip prompt with --profile):",
+        choices=[
+            questionary.Choice(
+                f"Best (default) — ADV $50M / EMA 5% / Base 40d / Dry-up scoring-only",
+                value="best",
+            ),
+            questionary.Choice(
+                f"Moderate lose — ADV $50M / EMA 8% / Base 40d / Dry-up scoring-only (loosen EMA)",
+                value="moderate-lose",
+            ),
+            questionary.Choice(
+                f"Widen — ADV $30M / EMA 8% / Base 40d / Dry-up scoring-only (also lower liquidity floor)",
+                value="widen",
+            ),
+        ],
+        default="best",
+        style=_QUESTIONARY_STYLE,
+    ).ask()
+    return profile  # type: ignore[return-value]
 
 
 def run_ep_command(
@@ -373,8 +421,9 @@ def run_bo_command(
     limit: int,
     apply_gates: bool = True,
     force_arg: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> int:
-    """Run full BO pipeline: scan + enrichment."""
+    """Run full BO pipeline: scan + funnel gate + enrichment."""
     force_keys = _parse_force_arg(force_arg)
     if force_keys is None:
         print("Cancelled.")
@@ -394,12 +443,68 @@ def run_bo_command(
         print(text)
 
     ratings = payload.get("ratings") or []
-    passing = [r for r in ratings if r.get("rating", 0) >= 4]
-    if passing:
-        print(f"\nRunning enrichment on {len(passing)} passing stocks...")
-        result = execute_bo_enrichment(passing)
+
+    if not apply_gates:
+        # Run all pasted — no funnel, all ratings go to enrichment
+        print(f"\nRunning enrichment on {len(ratings)} stocks (no funnel gate)...")
+        result = execute_bo_enrichment(ratings)
         rated = result["rated_stocks"]
         print(format_bo_rating_table(rated, min_rating=3))
+        return 0
+
+    # Determine profile: --profile > prompt (TTY) > "best" (headless)
+    from stock_analyze.scanners.bo.watchlist import apply_funnel, tradable_count
+
+    if profile is not None:
+        current_profile = profile
+    elif force_arg is not None or not sys.stdin.isatty():
+        # Headless / non-TTY — default to best
+        current_profile = "best"
+    else:
+        # Interactive TTY — prompt for profile
+        current_profile = _prompt_bo_profile(ratings)
+
+    if current_profile is None:
+        print("Cancelled.")
+        return 2
+
+    funnel = apply_funnel(ratings, current_profile)
+    survivors = funnel.survivors
+    print(f"\nFunnel gate ({current_profile}): {len(survivors)} survivors (3★+)")
+
+    if survivors:
+        # Show survivors table
+        by_star = {}
+        for c in survivors:
+            s = c["stars"]
+            by_star[s] = by_star.get(s, 0) + 1
+        parts = [f"{s}★={by_star.get(s, 0)}" for s in [5, 4, 3]]
+        print(f"  Stars breakdown: {', '.join(parts)}")
+        sorted_surv = sorted(survivors, key=lambda c: c["q_base"], reverse=True)
+        for i, c in enumerate(sorted_surv[:15]):
+            print(
+                f"  {i+1:>2}. {c['symbol']:<8} {c['stars']}★ Q={c['q_base']} "
+                f"Imp={c['prior_impulse_pct']:.1f}% ADV=${c['adv_20d']:,.0f} "
+                f"EMA={c['ema10_dist_pct']:.2f}% Base={c['base_duration']}d"
+            )
+
+    if not survivors:
+        print("No funnel survivors.")
+        return 0
+
+    # Stamp funnel stars on ratings
+    survivor_symbols = {s["symbol"] for s in survivors}
+    for r in ratings:
+        if r.get("symbol") in survivor_symbols:
+            match = next(s for s in survivors if s["symbol"] == r["symbol"])
+            r["funnel_stars"] = match["stars"]
+            r["q_base"] = match["q_base"]
+
+    passing = [r for r in ratings if r.get("symbol") in survivor_symbols]
+    print(f"\nRunning enrichment on {len(passing)} funnel survivors...")
+    result = execute_bo_enrichment(passing)
+    rated = result["rated_stocks"]
+    print(format_bo_rating_table(rated, min_rating=3))
 
     return 0
 
@@ -545,6 +650,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 limit=args.limit,
                 apply_gates=not getattr(args, "no_gates", False),
                 force_arg=getattr(args, "force", None),
+                profile=getattr(args, "profile", None),
             )
         except Exception as exc:
             logger.error("BO pipeline failed: %s", exc)

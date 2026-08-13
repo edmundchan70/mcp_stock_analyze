@@ -6,10 +6,12 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from logging import FileHandler
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Sequence
+from typing import Any, Callable, Generator, Literal, Optional, Sequence
 
 from dotenv import load_dotenv
 
@@ -25,6 +27,7 @@ from stock_analyze.models.vcp import VcpEnrichedBucket, VcpRatedBucket, VcpRated
 from stock_analyze.progress import RunProgress, build_rating_table
 from stock_analyze.scanners.bo.gates import build_bo_rated_stock
 from stock_analyze.scanners.bo.runner import run_bo_scan
+from stock_analyze.scanners.bo.watchlist import apply_funnel, q_base_to_stars, tradable_count
 from stock_analyze.scanners.ep.gates import BASELINE
 from stock_analyze.scanners.ep.runner import merge_force_rows, run_ep_scan
 from stock_analyze.scanners.vcp.gates import build_rated_stock
@@ -32,6 +35,30 @@ from stock_analyze.scanners.vcp.runner import merge_vcp_force_rows as _merge_vcp
 from stock_analyze.scanners.vcp.runner import run_vcp_scan
 
 logger = logging.getLogger(__name__)
+
+FILE_LOG_LEVEL = logging.DEBUG
+
+
+@contextmanager
+def _run_log(run_dir: Path) -> Generator[None, None, None]:
+    """Add a FileHandler writing to run_dir/run.log for the duration of the context."""
+    handler: Optional[FileHandler] = None
+    try:
+        handler = FileHandler(run_dir / "run.log", encoding="utf-8")
+        handler.setLevel(FILE_LOG_LEVEL)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root = logging.getLogger()
+        root.setLevel(min(root.level or logging.DEBUG, FILE_LOG_LEVEL))
+        root.addHandler(handler)
+        yield
+    finally:
+        if handler is not None:
+            root = logging.getLogger()
+            root.removeHandler(handler)
+            handler.close()
 
 GateSelect = Literal["baseline", "strict", "both"]
 AnalysisMethod = Literal["ep_rating"]
@@ -66,6 +93,7 @@ class RunConfig:
     output_root: Path = field(default_factory=lambda: Path("output"))
     min_rating: int = 4
     pipeline_type: str = "daily_ep_scan"
+    bo_profile: str = "best"
 
 
 @dataclass
@@ -696,23 +724,37 @@ def _run_daily_bo(
                 )
 
         ratings = agent1.get("ratings") or agent1.get("stocks") or []
-        passing = [
-            r for r in ratings
-            if r.get("rating", 0) >= 4
-        ]
+        profile = getattr(config, "bo_profile", "best")
+
+        # Run the funnel gate on the Agent 1 ratings
+        funnel = apply_funnel(ratings, profile)
+        reporter.console.print(
+            f"\n[bold]Funnel gate ({profile}):[/bold] "
+            f"{funnel.gate['passed']['g1_impulse'] + funnel.gate['failed']['g1_impulse']}→"
+            f"[green]{funnel.gate['passed']['g2_adv']}[/green]/"
+            f"[green]{funnel.gate['passed']['g3_ema10']}[/green]/"
+            f"[green]{funnel.gate['passed']['g4_base']}[/green] "
+            f"G2/G3/G4 pass → [bold green]{len(funnel.survivors)} survivors[/bold green]"
+        )
+
+        passing = funnel.survivors
         if not passing:
-            near_miss_raw = agent1_raw.get("near_miss") or agent1.get("near_miss") or []
-            if near_miss_raw:
-                nm_table = format_bo_near_miss_table(near_miss_raw)
-                reporter.console.print(nm_table)
             meta.update(
                 status="completed",
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 steps_completed=list(steps),
             )
             _write_meta(run_dir, meta)
-            reporter.stage_done(f"BO Daily Run complete (no 4-5★ stocks): {run_dir}")
+            reporter.stage_done(f"BO Daily Run complete (no funnel survivors): {run_dir}")
             return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
+
+        # Stamp funnel stars on the rating dicts for the enrichment / final report
+        survivor_symbols = {s["symbol"] for s in passing}
+        for r in ratings:
+            if r.get("symbol") in survivor_symbols:
+                match = next(s for s in passing if s["symbol"] == r["symbol"])
+                r["funnel_stars"] = match["stars"]
+                r["q_base"] = match["q_base"]
 
         if not config.run_catalyst:
             meta.update(
@@ -724,11 +766,12 @@ def _run_daily_bo(
             reporter.stage_done(f"BO Daily Run complete: {run_dir}")
             return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
 
-        reporter.stage(f"BO Enrichment — researching ({len(passing)} symbols)")
-        reporter.begin_ticker(len(passing), "BO Context")
+        surviving_ratings = [r for r in ratings if r.get("symbol") in survivor_symbols]
+        reporter.stage(f"BO Enrichment — researching ({len(surviving_ratings)} symbols)")
+        reporter.begin_ticker(len(surviving_ratings), "BO Context")
         t1 = time.perf_counter()
 
-        enrichment_result = execute_bo_enrichment(passing, on_ticker=reporter.ticker)
+        enrichment_result = execute_bo_enrichment(surviving_ratings, on_ticker=reporter.ticker)
         reporter.end_ticker()
 
         agent2 = enrichment_result["agent2"]
@@ -810,6 +853,7 @@ def run_daily(
             output_root=config.output_root,
             min_rating=config.min_rating,
             pipeline_type=config.pipeline_type,
+            bo_profile=getattr(config, "bo_profile", "best"),
         )
         run_dir = create_run_dir(stamped)
     except Exception as exc:
@@ -834,154 +878,157 @@ def run_daily(
     }
     _write_meta(run_dir, meta)
 
-    try:
-        reporter.stage(f"Daily Run started — {name}")
+    with _run_log(run_dir):
+        logger.info("Daily Run started — %s (pipeline=%s, force=%d, gates=%s)",
+            name, config.pipeline_type, len(force_keys), config.apply_gates)
+        try:
+            reporter.stage(f"Daily Run started — {name}")
 
-        # ── BO Pipeline Branch ────────────────────────────────────
-        if config.pipeline_type == "daily_bo_scan":
-            return _run_daily_bo(
-                config=stamped,
-                name=name,
-                run_dir=run_dir,
-                force_keys=force_keys,
-                meta=meta,
-                steps=steps,
-                reporter=reporter,
-            )
-
-        # ── VCP Pipeline Branch ──────────────────────────────────
-        if config.pipeline_type == "daily_vcp_scan":
-            return _run_daily_vcp(
-                config=stamped,
-                name=name,
-                run_dir=run_dir,
-                force_keys=force_keys,
-                meta=meta,
-                steps=steps,
-                reporter=reporter,
-            )
-
-        # ── EP Pipeline ─────────────────────────────────────────
-        t0 = time.perf_counter()
-        agent1_raw = execute_ep_scan(
-            force_keys=force_keys or None,
-            select=config.select,
-            limit=config.limit,
-            use_screener=False,
-            apply_gates=config.apply_gates,
-            on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
-            batch_progress=reporter,
-        )
-        agent1 = strip_internal_keys(agent1_raw)
-        agent1_path = run_dir / f"{name}_agent1.json"
-        _write_json(agent1_path, agent1)
-        steps.append("agent1")
-        _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
-        counts = agent1_raw.get("_counts") or {}
-        failed_force = agent1_raw.get("_failed_force") or []
-        agent1_done_msg = (
-            f"Agent 1 done "
-            f"(baseline={counts.get('baseline', '?')}, strict={counts.get('strict', '?')})"
-        )
-        if failed_force:
-            agent1_done_msg += f" [red]⚠ {len(failed_force)} force-include failed[/red]"
-        agent1_done_msg += f" — {time.perf_counter() - t0:.0f}s"
-        reporter.stage_done(agent1_done_msg)
-        if failed_force:
-            reporter.console.print(
-                "\n[bold yellow]Force-include symbols could not be resolved via Polygon:[/bold yellow]"
-            )
-            for f in failed_force:
-                reporter.console.print(
-                    f"  • [red]{f['symbol']}[/red]"
+            # ── BO Pipeline Branch ────────────────────────────────────
+            if config.pipeline_type == "daily_bo_scan":
+                return _run_daily_bo(
+                    config=stamped,
+                    name=name,
+                    run_dir=run_dir,
+                    force_keys=force_keys,
+                    meta=meta,
+                    steps=steps,
+                    reporter=reporter,
                 )
-            reporter.console.print(
-                "\n[italic]To resolve: check the ticker, correct it, "
-                "then re-run the pipeline with the corrected symbols "
-                "using `python -m stock_analyze ep --force` or the interactive wizard.[/italic]\n"
+
+            # ── VCP Pipeline Branch ──────────────────────────────────
+            if config.pipeline_type == "daily_vcp_scan":
+                return _run_daily_vcp(
+                    config=stamped,
+                    name=name,
+                    run_dir=run_dir,
+                    force_keys=force_keys,
+                    meta=meta,
+                    steps=steps,
+                    reporter=reporter,
+                )
+
+            # ── EP Pipeline ─────────────────────────────────────────
+            t0 = time.perf_counter()
+            agent1_raw = execute_ep_scan(
+                force_keys=force_keys or None,
+                select=config.select,
+                limit=config.limit,
+                use_screener=False,
+                apply_gates=config.apply_gates,
+                on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
+                batch_progress=reporter,
+            )
+            agent1 = strip_internal_keys(agent1_raw)
+            agent1_path = run_dir / f"{name}_agent1.json"
+            _write_json(agent1_path, agent1)
+            steps.append("agent1")
+            _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
+            counts = agent1_raw.get("_counts") or {}
+            failed_force = agent1_raw.get("_failed_force") or []
+            agent1_done_msg = (
+                f"Agent 1 done "
+                f"(baseline={counts.get('baseline', '?')}, strict={counts.get('strict', '?')})"
+            )
+            if failed_force:
+                agent1_done_msg += f" [red]⚠ {len(failed_force)} force-include failed[/red]"
+            agent1_done_msg += f" — {time.perf_counter() - t0:.0f}s"
+            reporter.stage_done(agent1_done_msg)
+            if failed_force:
+                reporter.console.print(
+                    "\n[bold yellow]Force-include symbols could not be resolved via Polygon:[/bold yellow]"
+                )
+                for f in failed_force:
+                    reporter.console.print(
+                        f"  • [red]{f['symbol']}[/red]"
+                    )
+                reporter.console.print(
+                    "\n[italic]To resolve: check the ticker, correct it, "
+                    "then re-run the pipeline with the corrected symbols "
+                    "using `python -m stock_analyze ep --force` or the interactive wizard.[/italic]\n"
+                )
+
+            if not config.run_catalyst:
+                meta.update(
+                    status="completed",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    steps_completed=list(steps),
+                )
+                _write_meta(run_dir, meta)
+                reporter.stage_done(f"Daily Run complete: {run_dir}")
+                return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
+
+            stocks = load_stocks_from_input(agent1, select=config.select)
+            reporter.stage(f"Catalyst — searching news ({len(stocks)} symbols)")
+            reporter.begin_ticker(len(stocks), "Catalyst")
+            t1 = time.perf_counter()
+            agent2 = execute_catalyst_enrich(stocks, on_ticker=reporter.ticker)
+            reporter.end_ticker()
+            agent2_path = run_dir / f"{name}_agent2.json"
+            _write_json(agent2_path, agent2)
+            steps.append("agent2")
+            _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
+            found = sum(1 for s in agent2.get("stocks") or [] if s.get("catalyst_found"))
+            reporter.stage_done(
+                f"Catalyst done (count={agent2.get('count')}, catalyst_found={found}) "
+                f"— {time.perf_counter() - t1:.0f}s"
             )
 
-        if not config.run_catalyst:
+            if config.analysis_method != "ep_rating":
+                meta.update(
+                    status="completed",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    steps_completed=list(steps),
+                )
+                _write_meta(run_dir, meta)
+                reporter.stage_done(f"Daily Run complete: {run_dir}")
+                return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
+
+            rated_stocks_in = load_stocks_from_input(agent2, select=config.select)
+            reporter.stage(f"EP Rating — rating ({len(rated_stocks_in)} symbols)")
+            reporter.begin_ticker(len(rated_stocks_in), "EP Rating")
+            t2 = time.perf_counter()
+            agent3, rated = execute_ep_rating(rated_stocks_in, on_ticker=reporter.ticker)
+            reporter.end_ticker()
+            agent3_path = run_dir / f"{name}_agent3.json"
+            _write_json(agent3_path, agent3)
+            steps.append("agent3")
+            matches = sum(1 for s in rated if s.ep_catalyst_match)
+            reporter.stage_done(
+                f"EP Rating done (count={agent3.get('count')}, ep_catalyst_match={matches}) "
+                f"— {time.perf_counter() - t2:.0f}s"
+            )
+            rating_table = build_rating_table(rated, min_rating=config.min_rating)
+            if rating_table is not None:
+                reporter.console.print(rating_table)
+            else:
+                reporter.console.print("[yellow](no names at this min-rating)[/yellow]")
+
             meta.update(
                 status="completed",
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 steps_completed=list(steps),
+                run_dir=str(run_dir),
             )
             _write_meta(run_dir, meta)
             reporter.stage_done(f"Daily Run complete: {run_dir}")
             return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
 
-        stocks = load_stocks_from_input(agent1, select=config.select)
-        reporter.stage(f"Catalyst — searching news ({len(stocks)} symbols)")
-        reporter.begin_ticker(len(stocks), "Catalyst")
-        t1 = time.perf_counter()
-        agent2 = execute_catalyst_enrich(stocks, on_ticker=reporter.ticker)
-        reporter.end_ticker()
-        agent2_path = run_dir / f"{name}_agent2.json"
-        _write_json(agent2_path, agent2)
-        steps.append("agent2")
-        _write_meta(run_dir, {**meta, "steps_completed": list(steps)})
-        found = sum(1 for s in agent2.get("stocks") or [] if s.get("catalyst_found"))
-        reporter.stage_done(
-            f"Catalyst done (count={agent2.get('count')}, catalyst_found={found}) "
-            f"— {time.perf_counter() - t1:.0f}s"
-        )
-
-        if config.analysis_method != "ep_rating":
+        except Exception as exc:
+            reporter.end_ticker()
+            logger.error("Daily Run failed: %s", exc)
             meta.update(
-                status="completed",
+                status="failed",
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 steps_completed=list(steps),
+                error=str(exc),
+                run_dir=str(run_dir),
             )
             _write_meta(run_dir, meta)
-            reporter.stage_done(f"Daily Run complete: {run_dir}")
-            return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
-
-        rated_stocks_in = load_stocks_from_input(agent2, select=config.select)
-        reporter.stage(f"EP Rating — rating ({len(rated_stocks_in)} symbols)")
-        reporter.begin_ticker(len(rated_stocks_in), "EP Rating")
-        t2 = time.perf_counter()
-        agent3, rated = execute_ep_rating(rated_stocks_in, on_ticker=reporter.ticker)
-        reporter.end_ticker()
-        agent3_path = run_dir / f"{name}_agent3.json"
-        _write_json(agent3_path, agent3)
-        steps.append("agent3")
-        matches = sum(1 for s in rated if s.ep_catalyst_match)
-        reporter.stage_done(
-            f"EP Rating done (count={agent3.get('count')}, ep_catalyst_match={matches}) "
-            f"— {time.perf_counter() - t2:.0f}s"
-        )
-        rating_table = build_rating_table(rated, min_rating=config.min_rating)
-        if rating_table is not None:
-            reporter.console.print(rating_table)
-        else:
-            reporter.console.print("[yellow](no names at this min-rating)[/yellow]")
-
-        meta.update(
-            status="completed",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            steps_completed=list(steps),
-            run_dir=str(run_dir),
-        )
-        _write_meta(run_dir, meta)
-        reporter.stage_done(f"Daily Run complete: {run_dir}")
-        return RunResult(exit_code=0, run_dir=run_dir, steps_completed=list(steps))
-
-    except Exception as exc:
-        reporter.end_ticker()
-        logger.error("Daily Run failed: %s", exc)
-        meta.update(
-            status="failed",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            steps_completed=list(steps),
-            error=str(exc),
-            run_dir=str(run_dir),
-        )
-        _write_meta(run_dir, meta)
-        reporter.fail(f"Daily Run failed after {steps}; artifacts in {run_dir}")
-        return RunResult(
-            exit_code=1,
-            run_dir=run_dir,
-            steps_completed=list(steps),
-            error=str(exc),
-        )
+            reporter.fail(f"Daily Run failed after {steps}; artifacts in {run_dir}")
+            return RunResult(
+                exit_code=1,
+                run_dir=run_dir,
+                steps_completed=list(steps),
+                error=str(exc),
+            )

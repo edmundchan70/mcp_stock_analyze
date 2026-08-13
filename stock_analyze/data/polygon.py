@@ -25,6 +25,13 @@ from polygon import RESTClient as PolygonRESTClient
 
 logger = logging.getLogger(__name__)
 
+# ── Pre-market hours (Eastern) ───────────────────────────────────
+_PREMARKET_START_HOUR = 4
+_PREMARKET_START_MINUTE = 0
+_PREMARKET_END_HOUR = 9
+_PREMARKET_END_MINUTE = 30
+_EASTERN = timezone(timedelta(hours=-5))  # EST; Polygon bars are in exchange local time
+
 # ── MIC → short exchange map ─────────────────────────────────────
 _MIC_MAP: dict[str, str] = {
     "XNAS": "NASDAQ",
@@ -375,3 +382,104 @@ def fetch_spy() -> pd.DataFrame:
         logger.warning("SPY fetch from Polygon failed")
         return pd.DataFrame()
     return df
+
+
+# ── pre-market minute bars ───────────────────────────────────────
+
+
+def _premarket_window() -> tuple[str, str]:
+    """Return (from_str, to_str) for today's pre-market window (ET) as Unix millis."""
+    now_et = datetime.now(timezone.utc).astimezone(_EASTERN)
+    today = now_et.date()
+    start = datetime(today.year, today.month, today.day,
+                     _PREMARKET_START_HOUR, _PREMARKET_START_MINUTE,
+                     tzinfo=_EASTERN)
+    end = datetime(today.year, today.month, today.day,
+                   _PREMARKET_END_HOUR, _PREMARKET_END_MINUTE,
+                   tzinfo=_EASTERN)
+    return str(int(start.timestamp() * 1000)), str(int(end.timestamp() * 1000))
+
+
+def fetch_premarket_aggs(symbol: str) -> pd.DataFrame:
+    """Fetch 1-minute aggregates for *symbol* during today's pre-market window.
+
+    Pre-market window: 4:00 AM – 9:30 AM Eastern.
+    Returns a DataFrame with DatetimeIndex and columns open/high/low/close/volume.
+    Returns an empty DataFrame on failure.
+    """
+    client = _get_client()
+    from_str, to_str = _premarket_window()
+    logger.info("Pre-market fetch for %s: %s → %s", symbol, from_str, to_str)
+    t0 = time.perf_counter()
+
+    try:
+        aggs = client.get_aggs(
+            ticker=symbol,
+            multiplier=1,
+            timespan="minute",
+            from_=from_str,
+            to=to_str,
+            adjusted=False,
+            limit=5000,
+        )
+        rows = [
+            {
+                "datetime": datetime.fromtimestamp(a.timestamp / 1000.0, tz=timezone.utc),
+                "open": a.open,
+                "high": a.high,
+                "low": a.low,
+                "close": a.close,
+                "volume": a.volume,
+            }
+            for a in aggs
+        ]
+        if not rows:
+            logger.info("Pre-market: no bars for %s (window %s → %s)", symbol, from_str, to_str)
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        df.set_index("datetime", inplace=True)
+        df.sort_index(inplace=True)
+        elapsed_s = time.perf_counter() - t0
+        logger.info("Pre-market %s: %d bars fetched in %.1fs", symbol, len(df), elapsed_s)
+        return df
+
+    except Exception as exc:
+        logger.warning("Pre-market fetch failed for %s: %s", symbol, exc)
+        return pd.DataFrame()
+
+
+def get_premarket_data(symbol: str) -> dict[str, Any]:
+    """Fetch pre-market summary for *symbol*.
+
+    Returns a dict with:
+        symbol, premarket_high, premarket_low, premarket_close
+        (the last traded price in pre-market), premarket_volume,
+        premarket_vwap (volume-weighted average price), bar_count.
+    Empty values (0 or None) when no pre-market data.
+    """
+    df = fetch_premarket_aggs(symbol)
+    if df.empty:
+        return {
+            "symbol": symbol.upper(),
+            "premarket_high": None,
+            "premarket_low": None,
+            "premarket_close": None,
+            "premarket_volume": 0,
+            "premarket_vwap": None,
+            "bar_count": 0,
+        }
+    vol = df["volume"].sum()
+    if vol > 0:
+        vwap = float((df["close"] * df["volume"]).sum() / vol)
+    else:
+        vwap = None
+    return {
+        "symbol": symbol.upper(),
+        "premarket_high": float(df["high"].max()),
+        "premarket_low": float(df["low"].min()),
+        "premarket_close": float(df["close"].iloc[-1]),
+        "premarket_volume": int(vol),
+        "premarket_vwap": round(vwap, 4) if vwap is not None else None,
+        "bar_count": len(df),
+    }
