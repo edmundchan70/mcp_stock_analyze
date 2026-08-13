@@ -31,18 +31,22 @@ def build_bo_rated_stock(
 ) -> BoRatedStock:
     """Merge setup rating + context enrichment → final rated stock.
 
-    Reuses the shared down-only cap logic (``apply_vcp_caps``) from the VCP
-    pipeline; only the merge structure is BO-specific.
+    Uses funnel_stars (from Q_base) as the base rating for down-only caps
+    when available; falls back to structural rating otherwise.
     """
-    final_rating, cap_applied, cap_reason = apply_vcp_caps(setup.rating, context)
+    base_rating = setup.funnel_stars if setup.funnel_stars > 0 else setup.rating
+    final_rating, cap_applied, cap_reason = apply_vcp_caps(base_rating, context)
     label = BO_LABELS.get(final_rating, "sub_standard")
+
+    # Keep the structural rating label for setup_label
+    setup_label = setup.label
 
     return BoRatedStock(
         symbol=setup.symbol,
         exchange=setup.exchange,
         company_name=context.symbol,  # Overridden by the runner with the real name.
         setup_rating=setup.rating,
-        setup_label=setup.label,
+        setup_label=setup_label,
         variant=setup.variant,
         as_of=setup.as_of,
         sector=context.sector,

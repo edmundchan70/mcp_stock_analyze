@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-analyze-server"
+version = "0.1.0"
+description = "FastAPI service wrapping the stock_analyze scan pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "stock-analyze",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "asyncpg>=0.29",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "httpx>=0.27",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "screener: tests covering the frozen/removed TradingView screener+OHLCV path",
+    "integration: tests that call live external APIs (require API keys, skipped otherwise)",
+]
+addopts = "-m \"not screener\""
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

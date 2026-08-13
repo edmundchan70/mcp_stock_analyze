@@ -68,6 +68,13 @@ class TestBoSetupRating:
             surge_pct=320.0,
             extension=False,
             extension_pct=0.0,
+            adv_20d=60_000_000,
+            ema10_dist_pct=3.0,
+            ema10_rising=True,
+            dryup_vol_ratio=0.4,
+            tightness=0.5,
+            q_base=85,
+            funnel_stars=4,
             pivot=150.7,
             breakout_idx=94,
             breakout_date=date(2024, 5, 10),
@@ -78,6 +85,38 @@ class TestBoSetupRating:
         assert r.label == "textbook"
         assert r.variant == "classic"
         assert r.volume_surge is True
+        assert r.adv_20d == 60_000_000
+        assert r.ema10_dist_pct == 3.0
+        assert r.ema10_rising is True
+        assert r.dryup_vol_ratio == 0.4
+        assert r.tightness == 0.5
+        assert r.q_base == 85
+        assert r.funnel_stars == 4
+
+    def test_bo_setup_rating_funnel_defaults(self):
+        r = BoSetupRating(
+            symbol="A",
+            exchange="NASDAQ",
+            variant="none",
+            rating=3,
+            label="sub_standard",
+            prior_impulse=False,
+            adr20=False,
+            base_duration=False,
+            vci=False,
+            ma_stack=False,
+            pivot_kde=False,
+            higher_lows=False,
+            volume_surge=False,
+            extension=False,
+        )
+        assert r.adv_20d == 0.0
+        assert r.ema10_dist_pct == 0.0
+        assert r.ema10_rising is False
+        assert r.dryup_vol_ratio == 1.0
+        assert r.tightness == 999.0
+        assert r.q_base == 0
+        assert r.funnel_stars == 0
 
     def test_bo_setup_rating_lower_base_capped(self):
         """lower_base never reaches 5★ in the model contract."""

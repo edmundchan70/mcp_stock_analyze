@@ -152,6 +152,36 @@ def run_bo_scan(
         if rating is None:
             continue
 
+        # ── Compute funnel gate fields while OHLCV is in hand ────────
+        if len(df) >= 20:
+            rating.adv_20d = float(
+                (df["close"].iloc[-20:] * df["volume"].iloc[-20:]).mean()
+            )
+        if len(df) >= 10:
+            ema10 = df["close"].ewm(span=10, adjust=False).mean()
+            ema_last = float(ema10.iloc[-1])
+            close_last = float(df["close"].iloc[-1])
+            if ema_last > 0:
+                rating.ema10_dist_pct = abs(close_last - ema_last) / ema_last * 100.0
+            rating.ema10_rising = (
+                float(ema10.iloc[-1]) > float(ema10.iloc[-4])
+            ) if len(ema10) >= 4 else False
+
+        # Dry-up ratio: reuse what metrics already computed
+        rating.dryup_vol_ratio = rating.dryup_ratio
+
+        # Tightness: last-bar range relative to ADR20
+        adr20 = rating.adr20_pct
+        if adr20 > 0 and len(df) >= 2:
+            lr = float(df["high"].iloc[-1] - df["low"].iloc[-1])
+            lc = float(df["close"].iloc[-1])
+            if lc > 0:
+                rating.tightness = ((lr / lc) * 100.0) / adr20
+            else:
+                rating.tightness = 999.0
+        else:
+            rating.tightness = 999.0
+
         ratings.append(rating)
 
     if batch_progress is not None:

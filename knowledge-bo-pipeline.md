@@ -2,9 +2,9 @@
 
 - **Purpose**: Pure-math detector for Kristjan Kullamägi "Qullamaggie Breakout" setups: stocks with extreme prior momentum (impulse ≥ 30% over 20–63d), a tightening 5–40d base (VCI ≤ 0.65), a KDE resistance pivot in the base's upper quartile, higher lows, and a breakout close above pivot with volume surge ≥ 1.5× baseline while price "surfs" the EMA10. Formatted exactly like the VCP pipeline (3 agents, wizard/CLI/pipeline integration identical).
 - **Key entry points**: `stock_analyze/cli.py` → `bo`/`bo-scan`/`bo-enrich` subcommands (`cli.py:100,106,112`), `stock_analyze/interactive.py` → "Daily BO scan" pipeline choice, `stock_analyze/pipeline.py` → `run_daily()` dispatches on `pipeline_type="daily_bo_scan"` → `_run_daily_bo()` (`pipeline.py:850`)
-- **Depends on**: `tradingview_screener`, `tvDatafeed`/`tradingview_data.batch_get_stock_data`, `pydantic`, `pandas`, `numpy`. Agent 2–3 reuses VCP's `agents/enrichment.py` (Tavily + OpenRouter) and VCP's `apply_vcp_caps`.
+- **Depends on**: `polygon-api-client` (Polygon.io OHLCV + Ticker Details), `pydantic`, `pandas`, `numpy`. Agent 2–3 reuses VCP's `agents/enrichment.py` (Tavily + OpenRouter) and VCP's `apply_vcp_caps`. Pre-market data via `stock_analyze/data/polygon.py` (`fetch_premarket_aggs`, `get_premarket_data`).
 - **Depended by**: wizard `_run_auto`/`_run_manual` (`interactive.py`), CLI handlers (`cli.py:268,301,324`), daily run dispatch (`pipeline.py:850`)
-- **Version**: 0.3.0 (implemented, full suite green 2026-08-10)
+- **Version**: 0.4.0 (funnel gate replaces structural gate, gap-options prompt, --profile CLI flag, ported from spike_watchlist.py 2026-08-11)
 
 ---
 
@@ -14,21 +14,25 @@
 stock_analyze/
 ├── scanners/
 │   ├── vcp/                    # VCP Agent 1 (unchanged; shared gates + RS metrics reused)
-│   └── bo/                     # NEW: BO Agent 1
+│   └── bo/                     # BO Agent 1
 │       ├── __init__.py         # Lazy-imports run_bo_scan
 │       ├── gates.py            # ADR20 envelope + BO gate + build_bo_rated_stock (reuses VCP caps)
 │       ├── metrics.py          # Prior impulse, ADR20, VCI, MA stack/surfing, KDE pivot, higher lows,
 │       │                       # volume signature, base detection, breakout trigger, variants, scoring
-│       └── runner.py           # run_bo_scan(), merge_bo_force_rows(), _fetch_spy()
+│       ├── runner.py           # run_bo_scan(), merge_bo_force_rows(), _fetch_spy()
+│       └── watchlist.py        # NEW: funnel gatekeeper — WATCHLIST_PROFILES, G2/G3/G4/G5 gates,
+│                               # compute_q_base, q_base_to_stars, apply_funnel(), tradable_count
 ├── models/
-│   └── bo.py                   # NEW: BoBase, BoSetupRating, BoScanBucket, BoEnrichedBucket,
-│                               # BoRatedStock, BoRatedBucket (reuses VcpContextEnrichment)
+│   └── bo.py                   # BoBase, BoSetupRating (extended: adv_20d, ema10_dist_pct,
+│                               # ema10_rising, dryup_vol_ratio, tightness, q_base, funnel_stars),
+│                               # BoScanBucket, BoEnrichedBucket, BoRatedStock, BoRatedBucket
 ├── data/
 │   └── screener.py             # extended: fetch_us_bo_universe() (same Stage-2 pre-filter, reuses VCP_COLUMNS)
 ├── pipeline.py                 # extended: execute_bo_scan/enrichment, format_bo_rating_table,
-│                               # _run_daily_bo, dispatch on daily_bo_scan
-├── interactive.py              # extended: "Daily BO scan" pipeline choice (Auto + Manual)
-└── cli.py                      # extended: bo / bo-scan / bo-enrich subcommands
+│                               # _run_daily_bo (funnel gate replaces rating>=4), funnel survivors → enrichment
+├── interactive.py              # extended: "Qullamaggie BO (Classic)" pipeline choice,
+│                               # _run_bo_interactive() with gap-options free loop prompt
+└── cli.py                      # extended: bo / bo-scan / bo-enrich subcommands, --profile flag
 ```
 
 ---
@@ -73,11 +77,27 @@ stock_analyze/
     else 3★ ; close>8% above EMA10 → clamp 3★ (extension)
                         |
                         v
-              BoScanBucket (5★/4★/3★)  [3★ discarded by passes_bo_gate]
+              BoScanBucket (5★/4★/3★)  [3★ discarded by passes_bo_gate (legacy)]
                         |
                         v
+         ┌─── Funnel Gate (NEW: replaces rating≥4) ──┐
+         │  G1: prior_impulse                         │
+         │  G2: 20d ADV$ ≥ floor (profile-dependent)  │
+         │  G3: |close-EMA10| ≤ max + EMA10 rising    │
+         │  G4: base 5–N days (profile-dependent)      │
+         │  G5: dry-up vol ratio (scoring-only)        │
+         │  Q_base ≥ 60 (3★ floor)                     │
+         └───────────────────┬─────────────────────────┘
+                             │
+             ┌───────────────┴───────────────┐
+             │  tradable ≥ 5?  YES → proceed │
+             │  NO → gap-options prompt      │
+             │  best / moderate-lose / widen │
+             │  (free loop, pick repeatedly)  │
+             └───────────────┬───────────────┘
+                             v
         Agent 2 (REUSED VCP): enrich_with_vcp_context → VcpContextEnrichment
-        Agent 3: build_bo_rated_stock → apply_vcp_caps (down-only)
+        Agent 3: build_bo_rated_stock → apply_vcp_caps (on funnel_stars)
         sort (-final_rating, symbol) → BoRatedBucket → {name}_agent3.json
 ```
 
@@ -145,7 +165,7 @@ stock_analyze/
 | `BoBase` | `:11` | Single base: start/end idx, base_high/low, depth_pct, duration_days, KDE pivot, vci, dryup_ratio |
 | `BO_VARIANT` | `:25` | Literal["classic", "lower_base", "none"] |
 | `BO_LABELS` | `:27` | {3:"sub_standard", 4:"strong", 5:"textbook"} |
-| `BoSetupRating` | `:34` | 9 essential boolean params (incl. `dryup`) + measured pct values + extension/sma50_extension_pct + meta (base/pivot/breakout/rvol10/rs_rating/as_of) + rating Literal[3,4,5] |
+| `BoSetupRating` | `:34` | 9 essential boolean params (incl. `dryup`) + measured pct values + extension/sma50_extension_pct + **funnel fields** (adv_20d, ema10_dist_pct, ema10_rising, dryup_vol_ratio, tightness, q_base, funnel_stars) + meta (base/pivot/breakout/rvol10/rs_rating/as_of) + rating Literal[3,4,5] |
 | `BoScanBucket` | `:78` | Agent 1 envelope: ratings + five/four/three_star + near_miss + counts + universe_source + gates_applied |
 | `BoNearMiss` | `:81` | 3★ near-miss snapshot: symbol, variant, passed/failed_essentials, measured values. Populated when ``apply_gates=True``, ≥7 of 9 essentials passed, not overextended. Sorted closest-first. |
 | `BoEnrichedBucket` | `:92` | Agent 2 output: list[VcpContextEnrichment] (reused schema) |
@@ -186,9 +206,24 @@ stock_analyze/
 |--------|------|------|
 | `ADR_LO` / `ADR_HI` | `:9-10` | 4.0 / 12.0 ADR envelope |
 | `passes_adr_envelope(adr20)` | `:13` | 4% ≤ ADR ≤ 12% |
-| `passes_bo_gate(rating)` | `:18` | rating ≥ 4 survives to enrichment |
-| `build_bo_rated_stock(setup, context)` | `:23` | Merge + reuse `apply_vcp_caps` → BoRatedStock |
+| `passes_bo_gate(rating)` | `:18` | (legacy) rating ≥ 4 survives — replaced by funnel gate |
+| `build_bo_rated_stock(setup, context)` | `:23` | Merge + reuse `apply_vcp_caps` → BoRatedStock. Uses `funnel_stars` when >0 |
 | `passes_liquidity_gate` / `MIN_ADV_DOLLAR` | re-exported from `scanners/vcp/gates.py` | Shared $10M ADV$ gate |
+
+### `stock_analyze/scanners/bo/watchlist.py` (NEW — Funnel Gate)
+
+| Symbol | Line | Role |
+|--------|------|------|
+| `WATCHLIST_PROFILES` | `:19` | 3 profiles: best (ADV $50M / EMA 5% / Base 40d / dryup scoring-only), moderate-lose (ADV $50M / EMA 8% / Base 40d), widen (ADV $30M / EMA 8% / Base 40d) |
+| `g2_adv_dollar(adv_20d, floor)` | `:29` | Dollar liquidity gate |
+| `g3_ema10_proximity(dist_pct, rising, max_pct)` | `:34` | EMA10 distance + rising check |
+| `g4_base_duration(days, base_max)` | `:39` | Base 5 ≤ days ≤ base_max |
+| `g5_volume_dryup(ratio, max_ratio)` | `:44` | Dry-up ratio check (None = disabled) |
+| `q_base_to_stars(score)` | `:49` | 90→5★, 75→4★, 60→3★, else 0 |
+| `compute_q_base(vci, hl, tightness, prior_pct, dryup, surfing)` | `:54` | Composite Q_base score (max 100, 6 parameters) |
+| `apply_funnel(ratings, profile)` | `:118` | Run 5-gate funnel → `FunnelResult(survivors, gate)` |
+| `tradable_count(survivors)` | `:178` | Count survivors with stars ≥ 3 (Q_base ≥ 60) |
+| `FunnelResult` | `:110` | Dataclass: survivors (list[dict]), gate (pass/fail counts) |
 
 ### `stock_analyze/scanners/bo/runner.py`
 
@@ -196,7 +231,7 @@ stock_analyze/
 |--------|------|------|
 | `merge_bo_force_rows(...)` | `:27` | Screener + force merge; screener wins on duplicate |
 | `_fetch_spy()` | `:58` | SPY 300 bars, AMEX → NYSE fallback |
-| `run_bo_scan(...)` | `:81` | Full Agent 1: merge→batch OHLCV (or single-fetch fallback)→SPY→liquidity→score→bucket. Accepts `batch_progress` |
+| `run_bo_scan(...)` | `:81` | Full Agent 1: merge→batch OHLCV→SPY→liquidity→score→**compute funnel fields (adv_20d, ema10_dist_pct, etc.)**. Accepts `batch_progress` |
 
 ### `stock_analyze/pipeline.py` (extended)
 
@@ -233,15 +268,16 @@ stock_analyze/
 | Test File | Tests | Type |
 |-----------|-------|------|
 | `tests/bo_fixtures.py` | — | Deterministic synthetic OHLCV builders (`_make_bo_series(impulse_pct, adr_pct, base_duration, vci, breakout_surge, surfing_dist, ...)`) + scenario helpers |
-| `tests/test_bo_models.py` | 12 | Schema validation, variant/label/rubric |
+| `tests/test_bo_models.py` | 14 | Schema validation, variant/label/rubric, funnel field defaults |
 | `tests/test_bo_metrics.py` | 30 | UT-01..06 indicators + EC-01..06 edge matrix + golden artifacts + variants |
 | `tests/test_bo_gates.py` | 17 | ADR envelope, BO gate, lower_base ceiling, caps |
 | `tests/test_bo_runner.py` | 9 | merge rows, run_bo_scan with mocked batch OHLCV |
-| `tests/test_pipeline_bo.py` | ~7 | RunConfig dispatch, execute_bo_scan/enrichment |
-| `tests/test_cli_bo.py` | ~12 | argparse subcommands, help text |
+| `tests/test_bo_watchlist.py` | 41 | NEW: Profile definitions, G2/G3/G4/G5 boundary values (5.0%, 90/75/60), Q_base scoring, apply_funnel gate counts |
+| `tests/test_pipeline_bo.py` | ~8 | RunConfig dispatch, execute_bo_scan/enrichment, funnel gate dispatch, wizard wording |
+| `tests/test_cli_bo.py` | ~15 | argparse subcommands, --profile flag, "Qullamaggie BO (Classic)" label |
 
-Run: `python -m pytest tests/test_bo_models.py tests/test_bo_metrics.py tests/test_bo_gates.py tests/test_bo_runner.py tests/test_pipeline_bo.py tests/test_cli_bo.py -q`
-Full suite: 274 passed, 1 skipped (2026-08-10).
+Run: `python -m pytest tests/test_bo_models.py tests/test_bo_metrics.py tests/test_bo_gates.py tests/test_bo_runner.py tests/test_bo_watchlist.py tests/test_pipeline_bo.py tests/test_cli_bo.py -q`
+Full suite: 379 passed, 0 skipped (2026-08-11).
 
 ---
 
@@ -249,8 +285,8 @@ Full suite: 274 passed, 1 skipped (2026-08-10).
 
 | Service | Library | Used By | Env Var | Credits / Cost |
 |---------|---------|---------|---------|----------------|
-| TradingView Screener | `tradingview-screener>=3.0.0` | `data/screener.py` (BO universe) | `TV_USERNAME`, `TV_PASSWORD` (optional) | Free |
-| TradingView OHLCV | `tvDatafeed` / `tradingview_data` | `batch_get_stock_data()`, `_fetch_spy()` | Same | Free |
+| Polygon OHLCV + Ticker Details | `polygon-api-client` | `data/polygon.py` (batch_get_stock_data, resolve_force_symbol, fetch_spy, fetch_premarket_aggs) | `POLYGON_API_KEY` | Free (5 API calls/min) |
+| Polygon Pre-market | `polygon-api-client` | `data/polygon.py` (fetch_premarket_aggs, get_premarket_data) | `POLYGON_API_KEY` | Same — 1 call/symbol for minute bars |
 | Tavily News Search | `tavily-python>=0.5.0` | Agent 2 (reused VCP enrichment) | `TAVILY_API_KEY` | 1,000 free/month |
 | OpenRouter LLM | `openai>=2.16` (OpenRouter) | Agent 2 LLM parse + force-include paste parse | `OPENROUTER_API_KEY` | ~$0.003-0.005/call |
 
@@ -260,6 +296,7 @@ Full suite: 274 passed, 1 skipped (2026-08-10).
 
 | Variable | Default | Used In | Purpose |
 |----------|---------|---------|---------|
+| `POLYGON_API_KEY` | (required) | All data (OHLCV, Ticker Details, pre-market) | Polygon.io API key |
 | `TAVILY_API_KEY` | (required) | Agent 2 | Context enrichment dual-query |
 | `OPENROUTER_API_KEY` | (required) | Agent 2 + paste parse | LLM context parsing |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | enrichment.py | OpenRouter endpoint |
@@ -269,17 +306,26 @@ Full suite: 274 passed, 1 skipped (2026-08-10).
 
 ## User Routes
 
-- **Route A — Auto**: Wizard → Pipeline=BO → optional force paste → name. Screener Stage-2 pre-filter → merge → batch OHLCV + SPY → liquidity gate → BO detect → 4-5★ → Tavily → ranked.
-- **Route B — Manual Apply Gate**: paste → "Apply Gate" → structural gate (rating ≥4) → enrich survivors.
+- **Route A — Auto**: Wizard → Pipeline=Qullamaggie BO (Classic) → force paste → name → Agent 1 → funnel gate (best) → gap-options prompt if tradable < 5 → enrich survivors.
+- **Route B — Manual Apply Gate**: paste → "Apply Gate" → funnel gate → gap-options prompt → enrich survivors.
 - **Route C — Manual Run All**: paste → "Run all pasted" → gates skipped (except liquidity) → all pasted enriched.
-- **Route D — CLI `bo-scan`**: Agent 1 only, no Tavily/LLM.
-- **Route E — CLI `bo-enrich --input agent1.json`**: re-run enrichment on existing artifact.
+- **Route D — CLI `bo`**: --profile best|moderate-lose|widen flag skips prompt; without it, TTY prompts; headless defaults to best.
+- **Route E — CLI `bo-scan`**: Agent 1 only, no funnel, no Tavily/LLM.
+- **Route F — CLI `bo-enrich --input agent1.json`**: re-run enrichment on existing artifact.
 
-Cost/timing mirror VCP (1 screener + 1 SPY + ~250 batch OHLCV + 30-60 Tavily + 15-30 LLM, ~8-10 min auto route).
+Cost/timing: 1 SPY + ~N batch Polygon OHLCV + 0-M Tavily (per survivor) + 0-M/2 LLM (per survivor), ~5-10 min auto route depending on force-include count.
 
 ---
 
 ## Edge Cases / Gotchas
+
+- **Funnel gate replaces structural gate**: `_run_daily_bo()` now applies `apply_funnel(ratings, profile)` instead of `rating >= 4`. Funnel survivors (Q_base ≥ 60) go to enrichment. Structural `BoSetupRating.rating` kept as reference.
+- **Funnel fields computed in runner.py**: `adv_20d`, `ema10_dist_pct`, `ema10_rising`, `dryup_vol_ratio`, `tightness` are computed from OHLCV in `run_bo_scan()` right after `score_bo_setup()` and persisted on the rating object.
+- **Q_base stars drive final report**: `build_bo_rated_stock()` uses `funnel_stars` (from Q_base scoring) as the base for VCP down-only caps when `funnel_stars > 0`; falls back to structural `rating` otherwise.
+- **Gap-options prompt**: triggered only when `tradable_count < 5` in interactive wizard or CLI TTY mode. Free loop — user can pick any profile any number of times, then "Keep what I have" to proceed.
+- **--profile flag**: CLI `bo --profile best|moderate-lose|widen` skips the prompt. Default: "best" when headless, or prompt when TTY without --profile.
+- **Dry-up is scoring-only**: All three profiles set `dryup: 0` (disabled as a hard gate). Dry-up ratio contributes to Q_base score but never rejects.
+- **Polygon-only**: Pipeline uses Polygon.io for all data (symbol resolution, OHLCV, screener removed). Force-only universe.
 
 - **Liquidity gate always enforced**: `passes_liquidity_gate()` fires before BO scoring regardless of `apply_gates` (`runner.py:170`). Illiquid force-included symbols are silently discarded even in Run-all-pasted mode.
 - **`apply_gates=False` only bypasses `passes_bo_gate`** — the ADR envelope and liquidity gate are hard requirements. Note `score_bo_setup` still rates 3★ stocks; Run-all passes them to enrichment.
@@ -300,3 +346,15 @@ Cost/timing mirror VCP (1 screener + 1 SPY + ~250 batch OHLCV + 30-60 Tavily + 1
 - **Batch OHLCV fallback**: if `batch_get_stock_data` import fails, runner falls back to per-symbol `get_stock_data` single fetches (`runner.py:131-143`).
 - **SPY fetch failure** → empty benchmark → all `rs_rating=None`; scoring proceeds (RS optional).
 - **Screening core is pure math** — no LLM in Agent 1 (research directive); LLM only in Agent 2 (reused) and force-paste parsing.
+
+### Run Artifacts (all pipelines)
+
+Each daily run writes the following files to `output/<date>/<HHMMSS>_<name>/`:
+
+| File | Writer | Description |
+|------|--------|-------------|
+| `run_meta.json` | `run_daily()` | Run metadata: name, pipeline_type, start/end time, steps_completed, status |
+| `{name}_agent1.json` | `execute_*_scan()` | Agent 1 output (ratings, buckets, counts) |
+| `{name}_agent2.json` | execute enrichment | Agent 2 output (context enrichment per symbol) |
+| `{name}_agent3.json` | execute rating | Agent 3 output (final rated stocks, sorted) |
+| `run.log` | `_run_log()` context manager | Full pipelined log: all `logger.info`/`logger.warning`/`logger.error` calls from every module in the pipeline (Polygon, BO/VCP/EP scanners, enrichment agents, rating agents). Timestamped with module name. Deleted on `FileHandler.close()` when the run completes or fails. Added via `FileHandler` to root logger; removed in `finally` block. Location: `pipeline.py:38`. |

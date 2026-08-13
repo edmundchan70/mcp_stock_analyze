@@ -27,15 +27,31 @@ def _make_rating_dict(rating: int = 5, symbol: str = "AAPL") -> dict:
         "rating": rating,
         "label": "textbook" if rating == 5 else "strong",
         "prior_impulse": True,
+        "prior_impulse_pct": 50.0,
         "adr20": True,
+        "adr20_pct": 6.0,
         "base_duration": True,
+        "base_duration_days": 20,
         "vci": True,
+        "vci_ratio": 0.52,
         "ma_stack": True,
+        "surfing_dist_pct": 2.0,
         "pivot_kde": True,
         "higher_lows": True,
+        "higher_lows_count": 2,
         "dryup": True,
+        "dryup_ratio": 0.4,
         "volume_surge": True,
+        "surge_pct": 320.0,
         "extension": False,
+        "extension_pct": 0.0,
+        "adv_20d": 60_000_000,
+        "ema10_dist_pct": 3.0,
+        "ema10_rising": True,
+        "dryup_vol_ratio": 0.4,
+        "tightness": 0.5,
+        "q_base": 0,
+        "funnel_stars": 0,
         "as_of": str(date.today()),
     }
 
@@ -174,11 +190,11 @@ class TestRunDailyBo:
 
     @patch("stock_analyze.pipeline.execute_bo_scan")
     def test_run_daily_bo_no_survivor_prints_near_miss(self, mock_scan):
-        """no 4-5★ survivors → short-circuit with only agent1, exit 0."""
+        """no funnel survivors → short-circuit with only agent1, exit 0."""
         mock_scan.return_value = {
-            "ratings": [_make_rating_dict(rating=3)],
+            "ratings": [_make_rating_dict(rating=3, symbol="TEST")],
             "five_star": [], "four_star": [],
-            "three_star": [_make_rating_dict(rating=3)],
+            "three_star": [_make_rating_dict(rating=3, symbol="TEST")],
             "near_miss": [
                 {
                     "symbol": "TEST",
@@ -206,6 +222,14 @@ class TestRunDailyBo:
             "counts": {"5": 0, "4": 0, "3": 1},
             "gates_applied": True,
         }
+        # Ratings lack funnel fields → funnel rejects all
+        mock_scan.return_value["ratings"][0].update({
+            "adv_20d": 10_000_000,  # below floor
+            "ema10_dist_pct": 999.0,
+            "ema10_rising": False,
+            "dryup_vol_ratio": 5.0,
+            "tightness": 999.0,
+        })
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = RunConfig(
@@ -278,7 +302,7 @@ class TestFormatBoNearMissTable:
 
 class TestWizardWording:
     def test_apply_gate_wording_bo_vs_ep(self):
-        """BO/VCP (structural=True) → 'structural gate'; EP (structural=False) → 'Baseline/Strict'."""
+        """BO/VCP (structural=True) → 'funnel gate'; EP (structural=False) → 'Baseline/Strict'."""
         from unittest.mock import patch
         from stock_analyze.interactive import _prompt_apply_gate_or_run_all
 
@@ -287,7 +311,7 @@ class TestWizardWording:
             _prompt_apply_gate_or_run_all(structural=True)
             choices = mock_select.call_args[0][1]
             structural_label = choices[0].title
-            assert "structural gate" in structural_label
+            assert "funnel gate" in structural_label.lower()
 
             _prompt_apply_gate_or_run_all(structural=False)
             choices2 = mock_select.call_args[0][1]

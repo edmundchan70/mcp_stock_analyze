@@ -12,9 +12,214 @@ from dotenv import load_dotenv
 
 from stock_analyze.data.symbols import SymbolKey
 from stock_analyze.force_include import parse_force_include_text
-from stock_analyze.pipeline import AnalysisMethod, GateSelect, RunConfig, run_daily
+from stock_analyze.pipeline import (
+    AnalysisMethod,
+    GateSelect,
+    RunConfig,
+    execute_bo_enrichment,
+    execute_bo_scan,
+    format_bo_rating_table,
+    run_daily,
+)
+from stock_analyze.scanners.bo.watchlist import WATCHLIST_PROFILES, apply_funnel, tradable_count
 
 logger = logging.getLogger(__name__)
+
+
+def _print_funnel_table(funnel_result, profile: str) -> None:
+    """Print the funnel gate table to the console."""
+    g = funnel_result.gate
+    total = sum(v for k in g for v in g[k].values()) // 5
+    questionary.print(f"\n{'─' * 70}", style="")
+    questionary.print(f"  Funnel gate: {profile}  ({total} symbols rated)", style="bold")
+    questionary.print(f"{'─' * 70}", style="")
+    questionary.print(f"{'Gate':<32} {'Pass':>8} {'Fail':>8}", style="bold")
+    gates = [
+        ("G1: Prior Impulse ≥ 30%", "g1_impulse"),
+        ("G2: 20d ADV$ ≥ floor", "g2_adv"),
+        ("G3: |Close-EMA10| ≤ limit + rising", "g3_ema10"),
+        ("G4: Valid Base 5-Nd", "g4_base"),
+        ("G5: Vol Dry-up [scoring only]", "g5_dryup"),
+    ]
+    for glabel, gkey in gates:
+        p = g["passed"][gkey]
+        f = g["failed"][gkey]
+        questionary.print(f"  {glabel:<30} {p:>8} {f:>8}")
+    surv = funnel_result.survivors
+    questionary.print(f"\n  Survivors (3★+): {len(surv)}")
+    if surv:
+        by_star = {}
+        for c in surv:
+            s = c["stars"]
+            by_star[s] = by_star.get(s, 0) + 1
+        parts = [f"{s}★={by_star.get(s, 0)}" for s in [5, 4, 3]]
+        questionary.print(f"  Stars: {', '.join(parts)}")
+        sorted_surv = sorted(surv, key=lambda c: c["q_base"], reverse=True)
+        questionary.print(
+            f"  {'#':>3} {'Symbol':<8} {'★':>3} {'Q':>5} {'Imp%':>7} "
+            f"{'ADV$':>12} {'EMA%':>7} {'Base':>5} {'Dryup':>8} {'VCI':>7} {'HL':>3}"
+        )
+        for i, c in enumerate(sorted_surv[:15]):
+            questionary.print(
+                f"  {i+1:>3} {c['symbol']:<8} {c['stars']:>3} {c['q_base']:>5} "
+                f"{c['prior_impulse_pct']:>6.1f}% {c['adv_20d']:>11,.0f} "
+                f"{c['ema10_dist_pct']:>6.2f}% {c['base_duration']:>4}d "
+                f"{c['dryup_vol_ratio']:>8.3f} {c['vci']:>7.4f} {c['higher_lows']:>3}"
+            )
+
+
+def _prompt_gap_options(current_survivors: int) -> Optional[str]:
+    """Show the grouped gap-options prompt when tradable survivors < 5."""
+    profiles = WATCHLIST_PROFILES
+    best_ema = profiles["best"]["ema"]
+    best_base = profiles["best"]["base"]
+    best_adv = profiles["best"]["adv"]
+
+    mod_ema = profiles["moderate-lose"]["ema"]
+    mod_base = profiles["moderate-lose"]["base"]
+    mod_adv = profiles["moderate-lose"]["adv"]
+
+    widen_ema = profiles["widen"]["ema"]
+    widen_base = profiles["widen"]["base"]
+    shorten_adv = profiles["widen"]["adv"]
+
+    questionary.print(
+        f"\n[bold yellow]Only {current_survivors} tradable stocks (Q_base ≥ 60). "
+        "Consider loosening the funnel.[/bold yellow]"
+    )
+
+    choice_labels = [
+        Choice(
+            f"Best (default) — ADV ${best_adv/1e6:.0f}M / EMA {best_ema}% / Base {best_base}d / Dry-up scoring-only",
+            value="best",
+        ),
+        Choice(
+            f"Moderate lose — ADV ${mod_adv/1e6:.0f}M / EMA {mod_ema}% / Base {mod_base}d / Dry-up scoring-only (loosen EMA)",
+            value="moderate-lose",
+        ),
+        Choice(
+            f"Widen — ADV ${shorten_adv/1e6:.0f}M / EMA {widen_ema}% / Base {widen_base}d / Dry-up scoring-only (also lower liquidity floor)",
+            value="widen",
+        ),
+        Choice("Keep what I have — proceed with current survivors", value="keep"),
+    ]
+
+    return _select(
+        "Choose a funnel profile (free loop — pick any, any number of times):",
+        choice_labels,
+        default="keep",
+    )
+
+
+def _run_bo_interactive(
+    force_keys: Optional[list[SymbolKey]],
+    *,
+    apply_gates: bool = True,
+    auto: bool = False,
+) -> int:
+    """Run the BO pipeline with interactive funnel gate and gap-options prompt.
+
+    If ``apply_gates`` is False (Manual "Run all pasted"), the funnel is
+    skipped and all ratings go straight to enrichment.
+    """
+    if not apply_gates:
+        name = _prompt_run_name()
+        if name is None:
+            return 2
+        cfg = RunConfig(
+            name=name,
+            select="strict",
+            run_catalyst=True,
+            analysis_method=None,
+            force_keys=force_keys or None,
+            use_screener=False,
+            apply_gates=False,
+            pipeline_type="daily_bo_scan",
+            output_root=Path("output"),
+        )
+        result = run_daily(cfg)
+        return result.exit_code
+
+    name = _prompt_run_name()
+    if name is None:
+        return 2
+
+    # Step 1: Run Agent 1 (structural scan)
+    questionary.print("\nRunning BO structural scan (Agent 1)...", style="bold")
+    agent1_raw = execute_bo_scan(
+        force_keys=force_keys or None,
+        limit=300,
+        use_screener=False,
+        apply_gates=apply_gates,
+    )
+    ratings = agent1_raw.get("ratings") or []
+    questionary.print(
+        f"Agent 1 done: {len(ratings)} stocks rated "
+        f"(5★={agent1_raw.get('counts', {}).get('5', 0)}, "
+        f"4★={agent1_raw.get('counts', {}).get('4', 0)}, "
+        f"3★={agent1_raw.get('counts', {}).get('3', 0)})",
+        style="bold fg:green",
+    )
+
+    # Step 2: Funnel gate with free profile loop
+    current_profile = "best"
+    while True:
+        funnel = apply_funnel(ratings, current_profile)
+        _print_funnel_table(funnel, current_profile)
+        t_count = tradable_count(funnel.survivors)
+
+        if t_count >= 5:
+            questionary.print(
+                f"\n{len(funnel.survivors)} tradable survivors — proceeding.",
+                style="bold fg:green",
+            )
+            # Stamp funnel stars on ratings
+            survivor_symbols = {s["symbol"] for s in funnel.survivors}
+            for r in ratings:
+                if r.get("symbol") in survivor_symbols:
+                    match = next(s for s in funnel.survivors if s["symbol"] == r["symbol"])
+                    r["funnel_stars"] = match["stars"]
+                    r["q_base"] = match["q_base"]
+            break
+
+        choice = _prompt_gap_options(len(funnel.survivors))
+        if choice is None or choice == "keep":
+            # Stamp funnel stars on ratings
+            survivor_symbols = {s["symbol"] for s in funnel.survivors}
+            for r in ratings:
+                if r.get("symbol") in survivor_symbols:
+                    match = next(s for s in funnel.survivors if s["symbol"] == r["symbol"])
+                    r["funnel_stars"] = match["stars"]
+                    r["q_base"] = match["q_base"]
+            break
+
+        current_profile = choice
+
+    # Step 3: Proceed with survivors to enrichment
+    survivor_symbols = {s["symbol"] for s in funnel.survivors}
+    passing = [r for r in ratings if r.get("symbol") in survivor_symbols]
+    if not passing:
+        questionary.print("No survivors after funnel gate.", style="bold fg:red")
+        return 0
+
+    questionary.print(
+        f"\nRunning BO context enrichment on {len(passing)} survivors...",
+        style="bold",
+    )
+    enrichment_result = execute_bo_enrichment(passing)
+    rated = enrichment_result["rated_stocks"]
+
+    questionary.print(
+        f"BO Final Rating done "
+        f"(count={len(rated)}, "
+        f"5★={sum(1 for s in rated if s.final_rating >= 5)}, "
+        f"4★={sum(1 for s in rated if s.final_rating >= 4)})",
+        style="bold fg:green",
+    )
+    questionary.print(format_bo_rating_table(rated, min_rating=3))
+
+    return 0
+
 
 _STYLE = Style(
     [
@@ -125,7 +330,7 @@ def _prompt_apply_gate_or_run_all(*, structural: bool = False) -> Optional[bool]
     """
     if structural:
         apply_label = (
-            "Apply Gate filter — Fetch metrics, apply structural gate (rating >= 4), "
+            "Apply Gate filter — Fetch metrics, apply funnel gate (ADV / EMA10 / base / dry-up), "
             "only survivors continue"
         )
     else:
@@ -193,7 +398,7 @@ def _run_auto() -> int:
         [
             Choice("Daily EP scan", value="daily_ep_scan"),
             Choice("Daily VCP scan", value="daily_vcp_scan"),
-            Choice("Daily BO scan", value="daily_bo_scan"),
+            Choice("Qullamaggie BO (Classic)", value="daily_bo_scan"),
         ],
         default="daily_ep_scan",
     )
@@ -207,6 +412,9 @@ def _run_auto() -> int:
     is_vcp = pipeline == "daily_vcp_scan"
     is_bo = pipeline == "daily_bo_scan"
     skips_ep_gate = is_vcp or is_bo
+
+    if is_bo:
+        return _run_bo_interactive(force_keys, apply_gates=True, auto=True)
 
     if not skips_ep_gate:
         select = _prompt_gate()
@@ -238,7 +446,7 @@ def _run_manual() -> int:
         [
             Choice("Daily EP scan", value="daily_ep_scan"),
             Choice("Daily VCP scan", value="daily_vcp_scan"),
-            Choice("Daily BO scan", value="daily_bo_scan"),
+            Choice("Qullamaggie BO (Classic)", value="daily_bo_scan"),
         ],
         default="daily_ep_scan",
     )
@@ -270,6 +478,9 @@ def _run_manual() -> int:
     run_catalyst: Optional[bool]
     analysis_method: Optional[AnalysisMethod]
     cancelled_run: bool
+
+    if is_bo and apply_gates:
+        return _run_bo_interactive(force_keys, apply_gates=True, auto=False)
 
     if skips_ep_gate:
         label = "VCP" if is_vcp else "BO"

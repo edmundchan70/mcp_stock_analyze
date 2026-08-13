@@ -1,7 +1,7 @@
 # Environments & Secrets
 .env
 .env.*
-! .env.example
+!.env.example
 
 # Python Virtual Environments
 venv/
@@ -9,6 +9,11 @@ venv/
 env/
 ENV/
 pyvenv.cfg
+
+# Python package build artifacts
+*.egg-info/
+build/
+dist/
 
 # IDEs and Code Editors
 .cursor/
@@ -37,3 +42,13 @@ output/
 .mypy_cache/
 .coverage
 htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+web/.env.local
+
+# Keep example env files (negate the .env.* rule above)
+!web/.env.local.example
