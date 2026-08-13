@@ -8,6 +8,12 @@ from __future__ import annotations
 
 import os
 
+from dotenv import load_dotenv
+
+# Load server/.env (find_dotenv walks up from this file: app/ -> server/).
+# Must run before any os.getenv reads below.
+load_dotenv()
+
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/stock_analyze"
 
 
