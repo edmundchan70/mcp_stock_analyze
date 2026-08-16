@@ -47,6 +47,22 @@ def test_build_raises_on_empty_symbols():
         build_run_config({"pipeline_type": "daily_bo_scan", "force_symbols": "   "})
 
 
+def test_build_sweep_config():
+    cfg = build_run_config(
+        {
+            "pipeline_type": "daily_bo_scan",
+            "use_screener": True,
+            "force_symbols": "",
+            "apply_gates": True,
+            "name": "market-sweep",
+        }
+    )
+    assert cfg.pipeline_type == "daily_bo_scan"
+    assert cfg.use_screener is True
+    assert cfg.force_keys == []
+    assert cfg.name == "market-sweep"
+
+
 def test_read_artifacts_glob(tmp_path):
     (tmp_path / "run_meta.json").write_text(json.dumps({"name": "x"}), encoding="utf-8")
     (tmp_path / "x_agent1.json").write_text(json.dumps({"ratings": []}), encoding="utf-8")

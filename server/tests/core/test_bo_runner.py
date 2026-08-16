@@ -65,6 +65,14 @@ class TestMergeForceRows:
         assert len(merged) == 1
         assert source == "force"
 
+    def test_merge_snapshot_source(self):
+        screener = [_make_resolved_row("AAPL")]
+        merged, force_set, source = merge_bo_force_rows(
+            screener, [], [], universe_source="snapshot",
+        )
+        assert len(merged) == 1
+        assert source == "snapshot"
+
 
 class TestRunBoScan:
     @patch("stock_analyze.scanners.bo.runner.batch_get_stock_data")
@@ -168,3 +176,17 @@ class TestRunBoScan:
         )
         assert bucket is not None
         assert bucket.near_miss == []
+
+    @patch("stock_analyze.scanners.bo.runner.batch_get_stock_data")
+    @patch("stock_analyze.scanners.bo.runner.fetch_spy")
+    def test_run_bo_scan_snapshot_source(self, mock_spy, mock_batch):
+        mock_batch.return_value = {"AAPL": make_scenario("textbook_classic")}
+        mock_spy.return_value = make_scenario("textbook_classic")
+        rows = [_make_resolved_row("AAPL")]
+        bucket = run_bo_scan(
+            screener_rows=rows,
+            universe_source="snapshot",
+            apply_gates=True,
+        )
+        assert bucket is not None
+        assert bucket.universe_source == "snapshot"

@@ -2,9 +2,9 @@
 
 - **Purpose**: Pure-math detector for Kristjan Kullamägi "Qullamaggie Breakout" setups: stocks with extreme prior momentum (impulse ≥ 30% over 20–63d), a tightening 5–40d base (VCI ≤ 0.65), a KDE resistance pivot in the base's upper quartile, higher lows, and a breakout close above pivot with volume surge ≥ 1.5× baseline while price "surfs" the EMA10. Formatted exactly like the VCP pipeline (3 agents, wizard/CLI/pipeline integration identical).
 - **Key entry points**: `stock_analyze/cli.py` → `bo`/`bo-scan`/`bo-enrich` subcommands (`cli.py:100,106,112`), `stock_analyze/interactive.py` → "Daily BO scan" pipeline choice, `stock_analyze/pipeline.py` → `run_daily()` dispatches on `pipeline_type="daily_bo_scan"` → `_run_daily_bo()` (`pipeline.py:850`)
-- **Depends on**: `polygon-api-client` (Polygon.io OHLCV + Ticker Details), `pydantic`, `pandas`, `numpy`. Agent 2–3 reuses VCP's `agents/enrichment.py` (Tavily + OpenRouter) and VCP's `apply_vcp_caps`. Pre-market data via `stock_analyze/data/polygon.py` (`fetch_premarket_aggs`, `get_premarket_data`).
-- **Depended by**: wizard `_run_auto`/`_run_manual` (`interactive.py`), CLI handlers (`cli.py:268,301,324`), daily run dispatch (`pipeline.py:850`)
-- **Version**: 0.4.0 (funnel gate replaces structural gate, gap-options prompt, --profile CLI flag, ported from spike_watchlist.py 2026-08-11)
+- **Depends on**: `polygon-api-client` (Polygon.io OHLCV + Ticker Details + Snapshot), `pydantic`, `pandas`, `numpy`. Agent 2–3 reuses VCP's `agents/enrichment.py` (Tavily + OpenRouter) and VCP's `apply_vcp_caps`. Pre-market data via `stock_analyze/data/polygon.py` (`fetch_premarket_aggs`, `get_premarket_data`). Market-wide universe via `fetch_market_snapshot`/`prefilter_snapshot`/`resolve_market_caps` (`data/polygon.py`).
+- **Depended by**: wizard `_run_auto`/`_run_manual` (`interactive.py`), CLI handlers (`cli.py:268,301,324`), daily run dispatch (`pipeline.py:850`), dashboard trigger (`server/app/jobs.py` → `build_run_config`)
+- **Version**: 0.5.0 (market-wide snapshot sweep universe, `MIN_MARKET_CAP` bumped to $300M, `use_screener` sweep path in `execute_bo_scan`, dashboard "Full market sweep" trigger)
 
 ---
 
@@ -40,12 +40,12 @@ stock_analyze/
 ## Architecture: 3-Agent BO Pipeline (VCP-mirrored)
 
 ```
-[TradingView Stage 2 Screener]     [Force Include (user paste)]
-        |                                    |
-        |  close≥10, close>SMA50/200,        |  LLM parse → SymbolKeys
-        |  ADV≥$10M, mktcap≥$100M            |  Screener lookup + OHLCV fallback
-        |                                    |
-        +------ merge_bo_force_rows() -------+
+[Market Snapshot Sweep (use_screener=True)]     [Force Include (user paste)]
+        |                                              |
+        |  /v2/snapshot → prefilter (price≥$10,         |  LLM parse → SymbolKeys
+        |  $vol proxy ≥$10M) → resolve_market_caps      |  resolve_force_symbol
+        |  (mcap ≥ $300M)                               |
+        +----------- merge_bo_force_rows() -------------+
                         |
                         v
          batch_get_stock_data()  [300 bars, persistent WS, on_progress ticker]
@@ -105,9 +105,9 @@ stock_analyze/
 
 ## Agent 1 — BO Structural Scanner (`scanners/bo/`)
 
-1. `fetch_us_bo_universe()` (`data/screener.py:138`) — identical Stage-2 pre-filter to VCP (`VCP_COLUMNS` reused): close≥10, close>SMA50, close>SMA200, ADV≥$10M, mktcap≥$100M, america market, volume-desc.
-2. Force-include: same `fetch_symbols()` + `enrich_with_retry()` OHLCV fallback path as VCP (`pipeline.py:370-406`).
-3. `merge_bo_force_rows()` (`scanners/bo/runner.py:27`) — screener row wins on duplicate key; returns (rows, force_set, source=screener|force|hybrid).
+1. **Paste path**: `resolve_force_symbol()` (`data/polygon.py:235`) resolves pasted symbols via Polygon Ticker Details.
+2. **Sweep path** (`use_screener=True`): `_execute_bo_sweep()` (`pipeline.py`) → `fetch_market_snapshot()` → `prefilter_snapshot()` → `resolve_market_caps()` (mcap ≥ $300M) → `run_bo_scan(universe_source="snapshot")`.
+3. `merge_bo_force_rows()` (`scanners/bo/runner.py:27`) — screener/snapshot rows win on duplicate key; returns (rows, force_set, source=force|snapshot|screener|hybrid).
 4. `batch_get_stock_data()` with `batch_progress` Rich ticker (throttle=5), same 300ms inter-delay / refresh-every-50 as VCP.
 5. `_fetch_spy()` (`runner.py:58`) — SPY 300 bars, AMEX then NYSE.
 6. `score_bo_setup(df, benchmark=None, ...)` (`metrics.py:430`) → `Optional[BoSetupRating]`.
@@ -209,6 +209,7 @@ stock_analyze/
 | `passes_bo_gate(rating)` | `:18` | (legacy) rating ≥ 4 survives — replaced by funnel gate |
 | `build_bo_rated_stock(setup, context)` | `:23` | Merge + reuse `apply_vcp_caps` → BoRatedStock. Uses `funnel_stars` when >0 |
 | `passes_liquidity_gate` / `MIN_ADV_DOLLAR` | re-exported from `scanners/vcp/gates.py` | Shared $10M ADV$ gate |
+| `passes_market_cap_gate` / `MIN_MARKET_CAP` | re-exported from `scanners/vcp/gates.py` | Shared $300M market-cap gate (bumped from $100M) |
 
 ### `stock_analyze/scanners/bo/watchlist.py` (NEW — Funnel Gate)
 
@@ -229,26 +230,35 @@ stock_analyze/
 
 | Symbol | Line | Role |
 |--------|------|------|
-| `merge_bo_force_rows(...)` | `:27` | Screener + force merge; screener wins on duplicate |
+| `merge_bo_force_rows(...)` | `:27` | Screener/snapshot + force merge; screener/snapshot rows win on duplicate. Accepts `universe_source` ("force"/"snapshot") |
 | `_fetch_spy()` | `:58` | SPY 300 bars, AMEX → NYSE fallback |
-| `run_bo_scan(...)` | `:81` | Full Agent 1: merge→batch OHLCV→SPY→liquidity→score→**compute funnel fields (adv_20d, ema10_dist_pct, etc.)**. Accepts `batch_progress` |
+| `run_bo_scan(...)` | `:81` | Full Agent 1: merge→batch OHLCV→SPY→liquidity→score→**compute funnel fields (adv_20d, ema10_dist_pct, etc.)**. Accepts `batch_progress` + `universe_source` |
 
 ### `stock_analyze/pipeline.py` (extended)
 
 | Symbol | Line | Role |
 |--------|------|------|
-| `execute_bo_scan(...)` | `:338` | BO Agent 1: screener/force fetch + enrich_with_retry fallback → run_bo_scan → payload + `_counts` |
+| `_execute_bo_sweep(...)` | `:374` | Sweep Agent 1: snapshot → prefilter → resolve market caps → `run_bo_scan(universe_source="snapshot")` |
+| `execute_bo_scan(...)` | `:414` | BO Agent 1: paste (force) OR sweep (`use_screener=True`) → run_bo_scan → payload + `_counts` |
 | `execute_bo_enrichment(...)` | `:484` | BO Agents 2-3: reuse VCP enrichment → BoRatedBucket |
 | `format_bo_rating_table(...)` | `:528` | Plain-text table of rated stocks |
 | `format_bo_near_miss_table(...)` | `:530` | Plain-text near-miss watchlist for the no-4-5★ short-circuit |
-| `_run_daily_bo(...)` | `:671` | Full daily run: Agent1→enrich→rate→artifacts, mirrors `_run_daily_vcp` |
-| `run_daily()` dispatch | `:850` | `pipeline_type == "daily_bo_scan"` → `_run_daily_bo` |
+| `_run_daily_bo(...)` | `:671` | Full daily run: Agent1→enrich→rate→artifacts, mirrors `_run_daily_vcp`. Passes `config.use_screener` |
+| `run_daily()` dispatch | `:850` | `pipeline_type == "daily_bo_scan"` → `_run_daily_bo`. Relaxed to allow empty `force_keys` when `use_screener` |
 
-### `stock_analyze/data/screener.py` (extended)
+### `stock_analyze/data/polygon.py` (extended)
 
 | Symbol | Line | Role |
 |--------|------|------|
-| `fetch_us_bo_universe(...)` | `:138` | Stage-2 pre-filter query; reuses `VCP_COLUMNS` + `MIN_ADV_DOLLAR` |
+| `fetch_market_snapshot()` | `:265` | Polygon `/v2/snapshot/locale/us/markets/stocks/tickers` → list of `{symbol, exchange, price, dollar_volume_proxy, change_pct}` (prev-day bar preferred) |
+| `prefilter_snapshot(rows, ...)` | `:307` | Trim snapshot by `min_price=10` + `min_dollar_vol=$10M` before mcap resolution |
+| `resolve_market_caps(symbols, ...)` | `:329` | Per-symbol `resolve_force_symbol` + `passes_market_cap_gate` (`min_mcap=$300M`) via ThreadPoolExecutor |
+
+### `stock_analyze/data/screener.py` (removed from use)
+
+| Symbol | Line | Role |
+|--------|------|------|
+| `fetch_us_bo_universe(...)` | `:138` | Legacy TradingView Stage-2 pre-filter (dead code — screener removed) |
 
 ### `stock_analyze/cli.py` (extended)
 
@@ -273,11 +283,16 @@ stock_analyze/
 | `tests/test_bo_gates.py` | 17 | ADR envelope, BO gate, lower_base ceiling, caps |
 | `tests/test_bo_runner.py` | 9 | merge rows, run_bo_scan with mocked batch OHLCV |
 | `tests/test_bo_watchlist.py` | 41 | NEW: Profile definitions, G2/G3/G4/G5 boundary values (5.0%, 90/75/60), Q_base scoring, apply_funnel gate counts |
-| `tests/test_pipeline_bo.py` | ~8 | RunConfig dispatch, execute_bo_scan/enrichment, funnel gate dispatch, wizard wording |
+| `tests/test_pipeline_bo.py` | ~8 | RunConfig dispatch, execute_bo_scan/enrichment, funnel gate dispatch, wizard wording + **sweep path** (`TestExecuteBoSweep`) |
 | `tests/test_cli_bo.py` | ~15 | argparse subcommands, --profile flag, "Qullamaggie BO (Classic)" label |
+| `tests/test_polygon_data.py` | +snapshot | `fetch_market_snapshot` (prev-day preference, empty-on-failure), `prefilter_snapshot`, `resolve_market_caps` |
+| `tests/test_bo_runner.py` | +2 | `merge_bo_force_rows(universe_source="snapshot")`, `run_bo_scan(universe_source="snapshot")` |
+| `server/tests/test_jobs.py` | +1 | `build_run_config` sweep mode (empty `force_keys`) |
+| `server/tests/test_routes.py` | +1 | `POST /api/runs` sweep (`use_screener=true`, empty symbols) |
+| `web/__tests__/ScanForm.test.tsx` | +1 | universe toggle hides symbols + submits `use_screener=true` |
 
 Run: `python -m pytest tests/test_bo_models.py tests/test_bo_metrics.py tests/test_bo_gates.py tests/test_bo_runner.py tests/test_bo_watchlist.py tests/test_pipeline_bo.py tests/test_cli_bo.py -q`
-Full suite: 379 passed, 0 skipped (2026-08-11).
+Full suite: 409 passed, 1 skipped (2026-08-13).
 
 ---
 
@@ -286,6 +301,7 @@ Full suite: 379 passed, 0 skipped (2026-08-11).
 | Service | Library | Used By | Env Var | Credits / Cost |
 |---------|---------|---------|---------|----------------|
 | Polygon OHLCV + Ticker Details | `polygon-api-client` | `data/polygon.py` (batch_get_stock_data, resolve_force_symbol, fetch_spy, fetch_premarket_aggs) | `POLYGON_API_KEY` | Free (5 API calls/min) |
+| Polygon Snapshot | `polygon-api-client` (`get_snapshot_all`) | `data/polygon.py` (`fetch_market_snapshot`) | `POLYGON_API_KEY` | Same — 1 call for all ~10k US tickers |
 | Polygon Pre-market | `polygon-api-client` | `data/polygon.py` (fetch_premarket_aggs, get_premarket_data) | `POLYGON_API_KEY` | Same — 1 call/symbol for minute bars |
 | Tavily News Search | `tavily-python>=0.5.0` | Agent 2 (reused VCP enrichment) | `TAVILY_API_KEY` | 1,000 free/month |
 | OpenRouter LLM | `openai>=2.16` (OpenRouter) | Agent 2 LLM parse + force-include paste parse | `OPENROUTER_API_KEY` | ~$0.003-0.005/call |
@@ -312,8 +328,9 @@ Full suite: 379 passed, 0 skipped (2026-08-11).
 - **Route D — CLI `bo`**: --profile best|moderate-lose|widen flag skips prompt; without it, TTY prompts; headless defaults to best.
 - **Route E — CLI `bo-scan`**: Agent 1 only, no funnel, no Tavily/LLM.
 - **Route F — CLI `bo-enrich --input agent1.json`**: re-run enrichment on existing artifact.
+- **Route G — Dashboard "Full market sweep"**: `ScanForm` universe toggle → POST `/api/runs` with `use_screener=true`, `force_symbols=""` → `build_run_config` skips paste parse → `_execute_bo_sweep` discovers the universe from the Polygon snapshot.
 
-Cost/timing: 1 SPY + ~N batch Polygon OHLCV + 0-M Tavily (per survivor) + 0-M/2 LLM (per survivor), ~5-10 min auto route depending on force-include count.
+Cost/timing: 1 SPY + ~N batch Polygon OHLCV + 0-M Tavily (per survivor) + 0-M/2 LLM (per survivor), ~5-10 min auto route depending on force-include count. The sweep is longer: ~10k snapshot → prefilter → hundreds of Ticker Details calls → hundreds of OHLCV fetches.
 
 ---
 
@@ -325,7 +342,11 @@ Cost/timing: 1 SPY + ~N batch Polygon OHLCV + 0-M Tavily (per survivor) + 0-M/2 
 - **Gap-options prompt**: triggered only when `tradable_count < 5` in interactive wizard or CLI TTY mode. Free loop — user can pick any profile any number of times, then "Keep what I have" to proceed.
 - **--profile flag**: CLI `bo --profile best|moderate-lose|widen` skips the prompt. Default: "best" when headless, or prompt when TTY without --profile.
 - **Dry-up is scoring-only**: All three profiles set `dryup: 0` (disabled as a hard gate). Dry-up ratio contributes to Q_base score but never rejects.
-- **Polygon-only**: Pipeline uses Polygon.io for all data (symbol resolution, OHLCV, screener removed). Force-only universe.
+- **Polygon-only**: Pipeline uses Polygon.io for all data (symbol resolution, OHLCV, screener removed). Universe is paste (`force`) or market-wide sweep (`snapshot`).
+- **Snapshot has no market cap**: `/v2/snapshot` returns `ticker` + `day`/`prevDay` (no `market_cap`). Market cap is only on `/v3/reference/tickers/{ticker}` — so `prefilter_snapshot` (price + dollar-volume proxy) runs first to shrink the list before `resolve_market_caps` issues one Ticker Details call per survivor.
+- **Snapshot clears at 3:30am ET**: `/v2/snapshot` resets daily; an intraday sweep uses the partial `day` bar, an after-close sweep uses the full `prev_day` bar (the `fetch_market_snapshot` default).
+- **Sweep scale**: snapshot survivors (hundreds) → batch OHLCV is a longer job than paste mode; may need a max-universe cap or rate-limit tuning.
+- **`use_screener` is BO-only**: `_execute_bo_sweep` lives in `execute_bo_scan`; VCP/EP still require paste (`force_keys`). `run_daily` relaxes the non-empty `force_keys` guard only when `config.use_screener`.
 
 - **Liquidity gate always enforced**: `passes_liquidity_gate()` fires before BO scoring regardless of `apply_gates` (`runner.py:170`). Illiquid force-included symbols are silently discarded even in Run-all-pasted mode.
 - **`apply_gates=False` only bypasses `passes_bo_gate`** — the ADR envelope and liquidity gate are hard requirements. Note `score_bo_setup` still rates 3★ stocks; Run-all passes them to enrichment.

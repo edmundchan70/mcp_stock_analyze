@@ -47,4 +47,20 @@ describe("ScanForm", () => {
       }),
     );
   });
+
+  it("hides symbols and submits a sweep for BO", () => {
+    const onSubmit = vi.fn();
+    render(<ScanForm onSubmit={onSubmit} submitting={false} />);
+    fireEvent.change(screen.getByLabelText(/universe/i), { target: { value: "sweep" } });
+    expect(screen.queryByLabelText(/symbols/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /run scan/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline_type: "daily_bo_scan",
+        force_symbols: "",
+        use_screener: true,
+      }),
+    );
+  });
 });

@@ -159,3 +159,59 @@ _Avoid_: BO news agent, custom BO enrichment
 **Daily BO scan**:
 `pipeline_type="daily_bo_scan"` → `_run_daily_bo()` → `{name}_agent1/2/3.json`, mirroring the VCP daily run.
 _Avoid_: breakout pipeline (as a type name)
+
+---
+
+## Component Pipeline Editor (spec)
+
+**Pipeline Definition**:
+A named, saved graph of Components plus each Component's inspector variables, persisted independently of any Run. Reusable; the Universe (paste/sweep/Force Include) is not part of it. `graph` JSONB = `{nodes: [{id, type, position, variables}], edges: [{id, source, sourceHandle, target, targetHandle}]}`.
+_Avoid_: recipe, template (unless meaning a saved graph), saved scan
+
+**Component**:
+One draggable canvas tool — Scanner (R1), Quant Filter/Gate (R2), AI Search (R3), Report (R4) — added via the floating + button. Settings panels write `node.data.variables`. Registered custom tools appear as per-entry palette items.
+_Avoid_: node (unless meaning the canvas box), step, agent (unless meaning the code behind a Component)
+
+**Component Template**:
+A saved `{component_id, variables}` snapshot — a component's type + config, quick-added from the palette or applied in the inspector. Stored in the `component_templates` table.
+_Avoid_: preset, snippet
+
+**Port Stage**:
+The 5 canonical row stages a Port is typed with: `symbolkey` / `scan_rows` / `filtered_rows` / `enriched_rows` / `report_rows`. A wire is legal only when the source output Port stage is in the target input Port's accept set (relaxed ordering; skip edges legal, e.g. Scanner → Report). Each Port is `required` or `optional`; an optional Port may be left unconnected.
+_Avoid_: socket, handle, edge type
+
+**Row**:
+The unit of data flowing between components: `{symbol, exchange}` plus opaque extra columns. `report_rows` rows carry a numeric rating.
+_Avoid_: stock object, item
+
+**Auto-merge**:
+Junctions dedupe by SymbolKey before a tool runs: one row per symbol, column union, first-wins, stable order. Fan-out copies row streams.
+_Avoid_: union (unless meaning column union), join
+
+**Soft-fail Degraded Row**:
+A row whose per-symbol step throws is carried forward with an `error` marker instead of aborting the batch. Hard failures (bad params, unconnected required ports) fail the run fast.
+_Avoid_: silent skip, best-effort
+
+**Universe Node**:
+The auto-seeded start node (`type:"universe"`, off the palette): one `out` Port emitting `symbolkey`, fanned out to one or more Scanners. Runtime-bound — the Definition stores the node and its edges; the Run binds the symbol source (paste / sweep / Force Include).
+_Avoid_: universe placeholder (as a type name), start trigger
+
+**ToolSpec**:
+The registry protocol in `stock_analyze/tools/`: `id, name, description, phase (1-4), inputs/outputs (PortDef, 5 canonical stages only), variables (VariableDef), callable (inputs: dict[port_id, list[dict]], params: dict) -> list[dict]`. Registered via `@register("id")`; `get_tools()` serves the palette (`GET /api/tools`).
+_Avoid_: plugin spec, code node
+
+**Run Snapshot**:
+The frozen graph JSON copied onto a Run when it starts (`runs.graph_snapshot`), so later edits to a Pipeline Definition never change how past Runs are interpreted.
+_Avoid_: run graph, frozen params
+
+**Lane**:
+One path from Universe to a terminal component (e.g. Scanner EP → Quant → AI Search → Report). Parallel Lanes merge by SymbolKey into the lane-merge table.
+_Avoid_: branch (unless meaning a fork), track, channel
+
+**Lane-Merge Table**:
+The graph-run results view: one row per symbol, with lanes, a normalized rating, and the source components. Rating precedence: `final_rating -> ep_rating -> funnel_stars -> structural_rating/setup_rating -> none`.
+_Avoid_: results grid, dedupe table
+
+**Preview Estimate**:
+`POST /api/runs/preview` — runs the Universe snapshot + prefilter (1 call) and returns `{symbol_count, estimated_seconds}` so the user can confirm Polygon cost before a graph run.
+_Avoid_: cost estimate, symbol count

@@ -10,6 +10,11 @@ from typing import AsyncGenerator, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from stock_analyze.force_include import parse_force_include_text
+from stock_analyze.tools import REGISTRY
+from stock_analyze.tools.canvas import to_walker_definition, validate_canvas_graph
+from stock_analyze.tools.preview import estimate_graph_run, estimate_symbol_count
+
 from ..config import get_output_root
 from ..db import Repo
 from ..jobs import JobManager
@@ -24,6 +29,23 @@ def _get_repo(request: Request) -> Repo:
 
 def _get_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
+
+
+async def _resolve_run_graph(body: RunCreate, repo: Repo) -> dict:
+    """Fetch/validate the canvas graph for a graph run; 404/422 on problems."""
+    if body.graph is None and body.definition_id is None:
+        return {}
+    if body.graph is not None:
+        graph = body.graph
+    else:
+        definition = await repo.get_definition(body.definition_id)
+        if definition is None:
+            raise HTTPException(status_code=404, detail="definition not found")
+        graph = definition["graph"]
+    errors = validate_canvas_graph(graph, tools=REGISTRY)
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+    return graph
 
 
 def _terminal_event(run: dict) -> dict:
@@ -44,7 +66,12 @@ async def _event_stream(
 ) -> AsyncGenerator[str, None]:
     # Already terminal — replay a single terminal event from the DB.
     if initial_run["status"] in ("succeeded", "failed"):
-        yield _format_sse("done" if initial_run["status"] == "succeeded" else "failed", _terminal_event(initial_run))
+        payload = _terminal_event(initial_run)
+        if initial_run["status"] == "succeeded":
+            artifacts = await repo.get_artifacts(run_id)
+            if artifacts.get("merge_table"):
+                payload["merge_table"] = artifacts["merge_table"]
+        yield _format_sse("done" if initial_run["status"] == "succeeded" else "failed", payload)
         return
 
     queue = manager.queue_for(run_id)
@@ -76,13 +103,65 @@ async def create_run(body: RunCreate, request: Request) -> dict:
     repo = _get_repo(request)
     manager = _get_manager(request)
 
+    graph = await _resolve_run_graph(body, repo)
     params = body.model_dump()
     params["output_root"] = get_output_root()
+    if graph:
+        params["graph"] = graph
 
     run_id = str(uuid.uuid4())
-    run = await repo.create_run(run_id, body.name, body.pipeline_type, params)
+    run = await repo.create_run(
+        run_id,
+        body.name,
+        body.pipeline_type,
+        params,
+        definition_id=body.definition_id,
+        graph_snapshot=graph or None,
+    )
     manager.start(run_id, params, repo, asyncio.get_running_loop())
     return run
+
+
+@router.post("/runs/preview")
+async def preview_run(body: RunCreate, request: Request) -> dict:
+    """Estimate cost + duration of a run before executing it (T22)."""
+    repo = _get_repo(request)
+    graph = await _resolve_run_graph(body, repo)
+
+    if graph:
+        definition = to_walker_definition(graph)
+        if body.universe_source == "snapshot":
+            symbol_count = estimate_symbol_count({"source": "snapshot"})
+        else:
+            parsed = parse_force_include_text(body.force_symbols)
+            symbol_count = max(1, len(parsed.symbols))
+        estimate = estimate_graph_run(definition, symbol_count)
+        return {
+            "estimate": estimate,
+            "graph": {
+                "name": definition.get("name"),
+                "nodes": len(definition.get("nodes") or []),
+                "edges": len(definition.get("edges") or []),
+            },
+        }
+
+    # Legacy pipeline preview: advisory symbol-count-only estimate.
+    if body.use_screener:
+        symbol_count = estimate_symbol_count({"source": "snapshot"})
+    else:
+        parsed = parse_force_include_text(body.force_symbols)
+        symbol_count = max(1, len(parsed.symbols))
+    return {
+        "estimate": {
+            "symbols": symbol_count,
+            "seconds": round(symbol_count * 0.06, 1),
+            "duration": f"{symbol_count * 0.06 / 60:.1f}m",
+            "cost": round(symbol_count * 0.00015, 2),
+            "nodes": [],
+            "warnings": [],
+        },
+        "graph": {"name": body.name, "nodes": 0, "edges": 0},
+    }
 
 
 @router.get("/runs")

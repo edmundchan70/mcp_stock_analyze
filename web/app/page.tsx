@@ -25,12 +25,20 @@ export default function Home() {
           <h1 className="text-2xl font-bold">Stock Scan Dashboard</h1>
           <p className="text-sm text-slate-400">Episodic Pivot · VCP · Qullamaggie BO</p>
         </div>
-        <Link
-          href="/new"
-          className="rounded-md bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500"
-        >
-          New scan
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/editor"
+            className="rounded-md bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700"
+          >
+            Graph editor
+          </Link>
+          <Link
+            href="/new"
+            className="rounded-md bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500"
+          >
+            New scan
+          </Link>
+        </div>
       </header>
 
       {loading ? (

@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { MergeTable } from "@/components/MergeTable";
 import { ProgressPanel, type ProgressState } from "@/components/ProgressPanel";
 import { ResultsTable } from "@/components/ResultsTable";
 import { getRun, PIPELINE_LABELS, subscribeToRunEvents } from "@/lib/api";
-import type { RunDetail, RunEvent } from "@/lib/types";
+import type { MergeTable as MergeTableData, RunDetail, RunEvent } from "@/lib/types";
 
 function reduceProgress(prev: ProgressState, e: RunEvent): ProgressState {
   const events = [...prev.events, e];
@@ -101,6 +102,8 @@ export default function RunDetailPage() {
               <pre className="overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-4 text-xs text-slate-300">
                 {JSON.stringify(run.artifacts, null, 2)}
               </pre>
+            ) : run.artifacts.merge_table ? (
+              <MergeTable table={run.artifacts.merge_table as MergeTableData} />
             ) : (
               <ResultsTable artifacts={run.artifacts} pipelineType={run.pipeline_type} />
             )}

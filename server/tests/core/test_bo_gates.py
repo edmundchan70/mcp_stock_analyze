@@ -216,10 +216,10 @@ class TestMarketCapGate:
         assert passes_market_cap_gate(500_000_000) is True
 
     def test_passes_at_threshold(self):
-        assert passes_market_cap_gate(100_000_000) is True
+        assert passes_market_cap_gate(300_000_000) is True
 
     def test_rejects_below_threshold(self):
-        assert passes_market_cap_gate(99_999_999) is False
+        assert passes_market_cap_gate(299_999_999) is False
 
     def test_rejects_none(self):
         assert passes_market_cap_gate(None) is False
