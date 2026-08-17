@@ -123,7 +123,7 @@ class Repo:
                 error = $3,
                 counts = COALESCE($4, counts),
                 finished_at = CASE
-                    WHEN $2 IN ('succeeded', 'failed') THEN now()
+                    WHEN $2 IN ('succeeded', 'failed', 'cancelled') THEN now()
                     ELSE finished_at
                 END
             WHERE id = $1
@@ -133,6 +133,22 @@ class Repo:
             error,
             _dump(counts),
         )
+
+    async def mark_interrupted_runs(self) -> int:
+        """Mark orphaned ``queued``/``running`` rows as failed (server restart)."""
+        tag = await self.pool.execute(
+            """
+            UPDATE runs
+            SET status = 'failed',
+                error = 'server restarted — run interrupted',
+                finished_at = now()
+            WHERE status IN ('queued', 'running')
+            """
+        )
+        try:
+            return int(str(tag).split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
     async def upsert_artifact(self, run_id: str, stage: str, payload: Any) -> None:
         await self.pool.execute(

@@ -52,7 +52,7 @@ export function subscribeToRunEvents(id: string, onEvent: (e: RunEvent) => void)
     onEvent(event);
     // The server closes the stream after a terminal event; prevent EventSource
     // from auto-reconnecting (which would replay "done" forever).
-    if (event.type === "done" || event.type === "failed") {
+    if (event.type === "done" || event.type === "failed" || event.type === "cancelled") {
       es.close();
     }
   };
@@ -121,4 +121,25 @@ export async function previewRun(body: Record<string, unknown>): Promise<Preview
     body: JSON.stringify(body),
   });
   return handle<PreviewResponse>(res);
+}
+
+/**
+ * Apply a runtime control action to an in-flight graph run
+ * (skip / pause / resume / cancel / confirm).
+ */
+export async function controlRun(
+  id: string,
+  action: string,
+  nodeId?: string,
+  decision?: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/runs/${id}/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, node_id: nodeId, decision }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${text.slice(0, 200)}`);
+  }
 }

@@ -19,7 +19,9 @@ import "@xyflow/react/dist/style.css";
 import Link from "next/link";
 
 import { MergeTable } from "@/components/MergeTable";
+import { ConfirmationModal } from "@/components/ConfirmationModal";
 import {
+  controlRun,
   createRun,
   deleteComponentTemplate,
   deleteDefinition,
@@ -34,6 +36,7 @@ import {
 import { UNIVERSE_ID, defaultsFor, isWireValid, visibleVars } from "@/lib/graph";
 import type {
   ComponentTemplate,
+  ConfirmationState,
   GraphDefinition,
   MergeTable as MergeTableData,
   PipelineDefinition,
@@ -77,7 +80,16 @@ const UNIVERSE_SPEC: ToolSpec = {
 interface NodeData extends Record<string, unknown> {
   component: ToolSpec;
   variables: Record<string, string | number | boolean>;
+  runStatus?: string;
 }
+
+const NODE_STATUS_RING: Record<string, string> = {
+  running: "ring-2 ring-blue-500/70",
+  ok: "ring-2 ring-emerald-500/70",
+  error: "ring-2 ring-rose-500/70",
+  skipped: "ring-2 ring-slate-500/50",
+  cancelled: "ring-2 ring-rose-500/50",
+};
 
 function ToolNode({ data, selected }: NodeProps) {
   const d = data as NodeData;
@@ -85,11 +97,12 @@ function ToolNode({ data, selected }: NodeProps) {
   const colors = TOOL_COLORS[def.id] ?? TOOL_COLORS.universe;
   const family = d.variables.family as string | undefined;
   const caption = family ? FAMILY_LABELS[family] ?? String(family) : def.description;
+  const statusRing = d.runStatus ? NODE_STATUS_RING[d.runStatus] ?? "" : "";
 
   return (
     <div
       className={`min-w-[190px] rounded-lg border ${colors.border} ${
-        selected ? "ring-2 ring-cyan-500/70" : ""
+        selected ? "ring-2 ring-cyan-500/70" : statusRing
       } bg-slate-900 shadow-lg`}
     >
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
@@ -183,6 +196,8 @@ export function GraphEditor() {
   const [nodeStatus, setNodeStatus] = useState<Record<string, { status: string; kept?: number }>>({});
   const [mergeTable, setMergeTable] = useState<MergeTableData | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runPaused, setRunPaused] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   const [preview, setPreview] = useState<PreviewEstimate | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -241,6 +256,15 @@ export function GraphEditor() {
   }
 
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  const displayNodes = useMemo<Node[]>(
+    () =>
+      nodes.map((n) => ({
+        ...n,
+        data: { ...(n.data as NodeData), runStatus: nodeStatus[n.id]?.status },
+      })),
+    [nodes, nodeStatus],
+  );
 
   const isValidConnection = useCallback(
     (conn: Edge | Connection): boolean =>
@@ -498,6 +522,8 @@ export function GraphEditor() {
     setRunError(null);
     setMergeTable(null);
     setNodeStatus({});
+    setRunPaused(false);
+    setConfirmation(null);
     try {
       const run = await createRun(runBody());
       setRunId(run.id);
@@ -511,11 +537,39 @@ export function GraphEditor() {
     if (e.type === "node" && e.node_id) {
       setNodeStatus((prev) => ({ ...prev, [e.node_id!]: { status: e.status ?? "running", kept: e.kept } }));
     }
+    if (e.type === "confirm_needed" && e.node_id) {
+      setConfirmation({
+        node_id: e.node_id,
+        symbol_count: e.symbol_count ?? null,
+        tavily_estimate: e.tavily_estimate ?? null,
+      });
+    }
+    if (e.type === "control") {
+      if (e.action === "pause") setRunPaused(true);
+      if (e.action === "resume") setRunPaused(false);
+    }
     if (e.type === "done") {
+      if (e.merge_table) setMergeTable(e.merge_table);
+    }
+    if (e.type === "cancelled") {
+      setRunError("run cancelled");
       if (e.merge_table) setMergeTable(e.merge_table);
     }
     if (e.type === "failed") {
       setRunError(e.error ?? "run failed");
+    }
+  }
+
+  async function control(action: string, nodeId?: string, decision?: string) {
+    if (!runId) return;
+    setRunError(null);
+    try {
+      await controlRun(runId, action, nodeId, decision);
+      if (action === "pause") setRunPaused(true);
+      if (action === "resume") setRunPaused(false);
+      if (decision) setConfirmation(null);
+    } catch (e) {
+      setRunError(String(e));
     }
   }
 
@@ -625,7 +679,7 @@ export function GraphEditor() {
         {/* Canvas */}
         <div className="relative min-w-0 flex-1">
           <ReactFlow
-            nodes={nodes}
+            nodes={displayNodes}
             edges={styledEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
@@ -695,6 +749,22 @@ export function GraphEditor() {
                 Run graph
               </button>
             </div>
+            {runId && (
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => control(runPaused ? "resume" : "pause")}
+                  className="flex-1 rounded-md bg-slate-800 px-2 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+                >
+                  {runPaused ? "Resume" : "Pause"}
+                </button>
+                <button
+                  onClick={() => control("cancel")}
+                  className="flex-1 rounded-md bg-rose-600 px-2 py-1.5 text-sm font-medium text-white hover:bg-rose-500"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
             {runId && (
               <Link href={`/runs/${runId}`} className="mt-2 block text-xs text-cyan-300 hover:underline">
                 View run {runId.slice(0, 8)} →
@@ -780,26 +850,39 @@ export function GraphEditor() {
             <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Run progress</h2>
             <div className="mt-2 space-y-1.5">
               {activeNodeStatuses.map((n) => (
-                <div key={n.id} className="flex items-center justify-between text-xs">
-                  <span className="text-slate-300">
+                <div key={n.id} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="min-w-0 truncate text-slate-300">
                     {n.tool.name} <span className="text-slate-600">{n.id}</span>
                   </span>
-                  {n.status ? (
-                    <span
-                      className={
-                        n.status.status === "ok"
-                          ? "text-emerald-400"
-                          : n.status.status === "error"
-                            ? "text-rose-400"
-                            : "text-amber-400"
-                      }
-                    >
-                      {n.status.status}
-                      {typeof n.status.kept === "number" ? ` (${n.status.kept})` : ""}
-                    </span>
-                  ) : (
-                    <span className="text-slate-600">waiting</span>
-                  )}
+                  <span className="flex shrink-0 items-center gap-2">
+                    {n.status ? (
+                      <span
+                        className={
+                          n.status.status === "ok"
+                            ? "text-emerald-400"
+                            : n.status.status === "error" || n.status.status === "cancelled"
+                              ? "text-rose-400"
+                              : n.status.status === "skipped"
+                                ? "text-slate-500"
+                                : "text-amber-400"
+                        }
+                      >
+                        {n.status.status}
+                        {typeof n.status.kept === "number" ? ` (${n.status.kept})` : ""}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">waiting</span>
+                    )}
+                    {runId && n.status?.status !== "ok" && n.status?.status !== "skipped" && (
+                      <button
+                        onClick={() => control("skip", n.id)}
+                        className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                        title="Skip this node"
+                      >
+                        skip
+                      </button>
+                    )}
+                  </span>
                 </div>
               ))}
               {activeNodeStatuses.length === 0 && <p className="text-xs text-slate-600">No nodes yet.</p>}
@@ -850,6 +933,15 @@ export function GraphEditor() {
             </div>
           </div>
         </div>
+      )}
+      {/* Confirmation gate modal */}
+      {confirmation && (
+        <ConfirmationModal
+          state={confirmation}
+          onProceed={() => control("confirm", confirmation.node_id, "proceed")}
+          onSkip={() => control("confirm", confirmation.node_id, "skip")}
+          onCancel={() => control("confirm", confirmation.node_id, "cancel")}
+        />
       )}
     </main>
   );

@@ -6,13 +6,14 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from stock_analyze.force_include import parse_force_include_text
 from stock_analyze.pipeline import RunConfig, run_daily
 from stock_analyze.tools import run_graph, validate_graph
 from stock_analyze.tools.canvas import to_walker_definition
 
+from .control import RunControl
 from .db import Repo
 from .reporter import EventReporter
 
@@ -83,12 +84,31 @@ def _graph_node_emitter(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
     return emit
 
 
+def _graph_confirm_emitter(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
+    """SSE on_confirm callback: thread-safe ``confirm_needed`` events."""
+
+    def emit(node_id: str, symbol_count: int, tavily_estimate: int) -> None:
+        event = {
+            "type": "confirm_needed",
+            "node_id": node_id,
+            "symbol_count": symbol_count,
+            "tavily_estimate": tavily_estimate,
+        }
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+        except RuntimeError:
+            pass
+
+    return emit
+
+
 async def run_graph_job(
     run_id: str,
     params: dict[str, Any],
     repo: Repo,
     loop: asyncio.AbstractEventLoop,
     queue: asyncio.Queue,
+    control: Optional[RunControl] = None,
 ) -> None:
     """Execute a component graph definition and persist per-node artifacts."""
     graph = params.get("graph")
@@ -110,6 +130,8 @@ async def run_graph_job(
             universe_rows,
             node_overrides=params.get("node_overrides") or {},
             on_node=_graph_node_emitter(queue, loop),
+            control=control,
+            on_confirm=_graph_confirm_emitter(queue, loop),
         )
     except Exception as exc:
         logger.error("Graph run %s failed: %s", run_id, exc)
@@ -117,6 +139,7 @@ async def run_graph_job(
         await queue.put({"type": "failed", "error": str(exc)})
         return
 
+    terminal_status = "cancelled" if result.cancelled else "succeeded"
     try:
         counts: dict[str, Any] = {"reports": result.merge_table["count"], "degraded": result.degraded}
         for node_id, node_result in result.nodes.items():
@@ -125,6 +148,7 @@ async def run_graph_job(
                 f"node:{node_id}",
                 {
                     "tool_id": node_result.tool_id,
+                    "status": node_result.status,
                     "output_rows": node_result.output_rows,
                     "errors": node_result.errors,
                     "dropped": node_result.dropped,
@@ -136,15 +160,25 @@ async def run_graph_job(
         await repo.upsert_artifact(
             run_id, "universe", {"rows": universe_rows, "config": universe}
         )
-        await repo.set_status(run_id, "succeeded", counts=counts)
-        await queue.put(
-            {
-                "type": "done",
-                "counts": counts,
-                "degraded": result.degraded,
-                "merge_table": result.merge_table,
-            }
-        )
+        await repo.set_status(run_id, terminal_status, counts=counts)
+        if result.cancelled:
+            await queue.put(
+                {
+                    "type": "cancelled",
+                    "counts": counts,
+                    "degraded": result.degraded,
+                    "merge_table": result.merge_table,
+                }
+            )
+        else:
+            await queue.put(
+                {
+                    "type": "done",
+                    "counts": counts,
+                    "degraded": result.degraded,
+                    "merge_table": result.merge_table,
+                }
+            )
     except Exception as exc:
         logger.error("Persisting graph run %s failed: %s", run_id, exc)
         await repo.set_status(run_id, "failed", error=f"persist failed: {exc}")
@@ -220,6 +254,7 @@ async def run_scan_job(
     repo: Repo,
     loop: asyncio.AbstractEventLoop,
     queue: asyncio.Queue,
+    control: Optional[RunControl] = None,
 ) -> None:
     """Run a scan to completion and persist the result.
 
@@ -229,7 +264,7 @@ async def run_scan_job(
     reporter = EventReporter(queue, loop)
 
     if params.get("graph") is not None:
-        await run_graph_job(run_id, params, repo, loop, queue)
+        await run_graph_job(run_id, params, repo, loop, queue, control)
         return
 
     try:
@@ -273,11 +308,12 @@ async def run_scan_job(
 
 
 class JobManager:
-    """Registry of in-flight runs: one event queue and one task per run id."""
+    """Registry of in-flight runs: one event queue, control object, and task per run id."""
 
     def __init__(self) -> None:
         self._queues: dict[str, asyncio.Queue] = {}
         self.tasks: dict[str, asyncio.Task] = {}
+        self._controls: dict[str, RunControl] = {}
 
     def start(
         self,
@@ -287,10 +323,19 @@ class JobManager:
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         queue: asyncio.Queue = asyncio.Queue()
+        control = RunControl()
         self._queues[run_id] = queue
-        task = asyncio.create_task(run_scan_job(run_id, params, repo, loop, queue))
+        self._controls[run_id] = control
+        task = asyncio.create_task(run_scan_job(run_id, params, repo, loop, queue, control))
         self.tasks[run_id] = task
-        task.add_done_callback(lambda _t: self.tasks.pop(run_id, None))
+        task.add_done_callback(lambda _t: self._cleanup(run_id))
+
+    def _cleanup(self, run_id: str) -> None:
+        self.tasks.pop(run_id, None)
+        self._controls.pop(run_id, None)
 
     def queue_for(self, run_id: str) -> Optional[asyncio.Queue]:
         return self._queues.get(run_id)
+
+    def control_for(self, run_id: str) -> Optional[RunControl]:
+        return self._controls.get(run_id)

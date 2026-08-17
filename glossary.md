@@ -245,7 +245,7 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 
 | Term | Meaning |
 |------|---------|
-| **Run (DB record)** | A persisted scan execution in the `runs` table: `id`, `name`, `pipeline_type`, `status`, `params` (JSONB), `counts` (JSONB), `error`, `started_at`, `finished_at`. Status lifecycle: `queued → running → succeeded \| failed`. Managed by `Repo` (`server/app/db.py`). |
+| **Run (DB record)** | A persisted scan execution in the `runs` table: `id`, `name`, `pipeline_type`, `status`, `params` (JSONB), `counts` (JSONB), `error`, `started_at`, `finished_at`. Status lifecycle: `queued → running → succeeded \| failed \| cancelled`. Managed by `Repo` (`server/app/db.py`). |
 | **Run Artifacts (DB)** | The `run_artifacts` table: one JSONB `payload` per `(run_id, stage)` where stage ∈ `meta` \| `agent1` \| `agent2` \| `agent3`. Upserted from `read_artifacts()` after `run_daily()` finishes (`server/app/jobs.py`). |
 | **EventReporter** | `RunProgress` duck-type adapter (`server/app/reporter.py`) that marshals `stage` / `stage_done` / `fail` / `begin_ticker` / `ticker` / `end_ticker` / `console.print` calls onto an asyncio.Queue via `loop.call_soon_threadsafe` (pipeline runs in a worker thread). |
 | **JobManager** | Registry of in-flight runs: one event queue + one `asyncio.Task` per run id (`server/app/jobs.py:JobManager`). |
@@ -275,3 +275,24 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 | **Preview Estimate** | `POST /api/runs/preview` — runs the Universe snapshot + prefilter (1 call) and returns `{symbol_count, estimated_seconds}` so the user can confirm Polygon cost before a graph run. `estimated_seconds = ceil(symbol_count × calls_per_symbol / effective_calls_per_min)`. |
 | **Scanner Family** | The Scanner's `family` variable (`ep`/`vcp`/`bo`/`custom`, renamed from the stub's `ep_gap`) swaps which threshold groups the inspector shows. |
 | **Daily Preset Definition** | One of three full-chain canvas definitions seeded into `pipeline_definitions` at server boot by `server/app/seed.py`: `Daily VCP Scan`, `Daily BO Scan`, `Daily EP Scan` (each `Universe → Scanner → AI Search → Report`). Seed-if-absent **by name** (idempotent, self-healing — user edits survive, deletions resurrect). The universe-source default is carried as `graph.defaults.universe_source` (`"snapshot"` for BO, `"paste"` for VCP/EP); the walker ignores this extra top-level key. |
+
+---
+
+## Runtime Control (graph runs)
+
+| Term | Meaning |
+|------|---------|
+| **Runtime Control** | Interactive, in-flight control of a component graph run: skip / pause / resume / cancel, plus an AI-Search confirmation gate. Scope: graph runs only (not legacy `run_daily`). |
+| **RunControl** | Thread-safe per-run control object (`server/app/control.py:21`) owned by `JobManager._controls`. Guards a skip set, pause/cancel `threading.Event`s, and confirm-gate state with `threading.Lock`. |
+| **RunCancelled** | Cooperative cancel exception (`stock_analyze/tools/control.py:20`) raised at the next checkpoint once cancel is armed; the job maps it to `cancelled` status. |
+| **Checkpoint** | A blocking callable the search agents call at per-symbol boundaries (`RunControl.checkpoint`). Returns immediately while running, freezes (drain-then-freeze) while paused, raises `RunCancelled` once cancelled. |
+| **Skip (pass-through)** | Pre-emptive node skip: the node's input rows flow through unchanged and `NodeResult.status = skipped`; Report still produces a table. Skip-after-started is a no-op. |
+| **Pause / Resume** | Pause freezes the walker at the next checkpoint (between nodes or at the next per-symbol boundary; in-flight ≤5 Tavily/LLM calls drain). Resume clears the flag. |
+| **Cancel** | Graceful: stop scheduling new work at the next checkpoint, mark the run `cancelled`, persist partial artifacts. Also resolves a pending confirmation gate. |
+| **Confirmation Gate** | Pre-AI-Search block: when the `search` node's input rows exceed `confirm_threshold` (default 50, 0 = off), the run blocks and emits `confirm_needed`; user picks `proceed` / `skip` / `cancel`. Armed skip suppresses the gate (skip-wins). |
+| **`confirm_threshold`** | AI-Search `SEARCH_VARS` variable (`stock_analyze/tools/variables.py:119`): "Confirm above N symbols", default 50. |
+| **Awaiting Confirmation** | Persistent run state (dashboard + run detail) while a node is blocked on the gate; cancelable there. Exposed via `RunControl.pending_confirmation()` and `_attach_control_state`. |
+| **`__control_id__`** | JSON-safe opaque token injected into each node's `params` by `run_graph`; `_search_callable` recovers the `RunControl` via `checkpoint_for` to populate the agents' `checkpoint` kwarg. |
+| **Interrupted-Run Reconciliation** | On server startup, `Repo.mark_interrupted_runs()` (`server/app/db.py:137`) marks orphaned `queued`/`running` rows `failed` with error `server restarted — run interrupted`. |
+| **Control Endpoint** | `POST /api/runs/{id}/control` (`server/app/routes/runs.py:199`) with actions `skip|pause|resume|cancel|confirm` (confirm carries `decision: proceed|skip|cancel` + `node_id`). |
+| **`node:<id>` Artifact** | Per-node artifact persisted on graph-run completion/cancel: `{tool_id, status, output_rows, errors, dropped, duration_ms, error}` (`server/app/jobs.py:145`). Used to reconstruct node progress for late SSE subscribers. |

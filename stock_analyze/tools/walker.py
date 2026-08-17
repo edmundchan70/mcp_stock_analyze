@@ -24,6 +24,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .control import RunCancelled, register_control, unregister_control
 from .merge import merge_rows, to_merge_table
 from .protocol import ERROR_KEY, ToolSpec, stage_accepts
 from .registry import REGISTRY
@@ -42,6 +43,7 @@ class NodeResult:
     dropped: int = 0
     duration_ms: int = 0
     error: Optional[str] = None
+    status: str = "ok"  # ok | error | skipped | cancelled
 
 
 @dataclass
@@ -50,6 +52,7 @@ class GraphRunResult:
     nodes: dict[str, NodeResult]
     merge_table: dict[str, Any]
     degraded: bool = False
+    cancelled: bool = False
 
 
 def default_params(spec: ToolSpec) -> dict[str, Any]:
@@ -228,11 +231,16 @@ def run_graph(
     tools: Optional[dict[str, ToolSpec]] = None,
     node_overrides: Optional[dict[str, dict[str, Any]]] = None,
     on_node: Optional[Callable[[str, str, str, int, int], None]] = None,
+    control: Optional[Any] = None,
+    on_confirm: Optional[Callable[[str, int, int], None]] = None,
 ) -> GraphRunResult:
     """Execute a graph definition over ``universe_rows``.
 
     ``on_node(node_id, tool_id, status, kept, total)`` fires per node
-    (status ``running``/``ok``/``error``) — wired to SSE progress (T22).
+    (status ``running``/``ok``/``error``/``skipped``/``cancelled``) — wired to
+    SSE progress. ``control`` (a ``RunControl`` duck-type) enables runtime
+    skip/pause/cancel + the AI Search confirmation gate; ``on_confirm(node_id,
+    symbol_count, tavily_estimate)`` fires when the gate blocks.
     """
     tools = tools or REGISTRY
     errors = validate_graph(definition, tools=tools)
@@ -243,78 +251,128 @@ def run_graph(
     order = topological_order(definition.get("edges") or [], nodes_by_id)
     edges = definition.get("edges") or []
 
+    control_id = register_control(control) if control is not None else None
+
     out_by_node: dict[str, dict[str, list[dict[str, Any]]]] = {}
     results: dict[str, NodeResult] = {}
     degraded = False
+    cancelled = False
     report_rows: list[dict[str, Any]] = []
 
-    for nid in order:
-        node = nodes_by_id[nid]
-        spec = tools[node["tool_id"]]
-        params = _tool_params(spec, node.get("params") or {})
-        if node_overrides and nid in node_overrides:
-            params.update(node_overrides[nid])
+    try:
+        for nid in order:
+            node = nodes_by_id[nid]
+            spec = tools[node["tool_id"]]
+            params = _tool_params(spec, node.get("params") or {})
+            if node_overrides and nid in node_overrides:
+                params.update(node_overrides[nid])
+            if control_id is not None:
+                params["__control_id__"] = control_id
 
-        if on_node is not None:
-            on_node(nid, spec.id, "running", 0, 0)
-        started = time.perf_counter()
+            # Assemble per-port inputs (auto-merge at junctions).
+            inputs: dict[str, list[dict[str, Any]]] = {}
+            fed: set[str] = set()
+            for e in edges:
+                if e.get("target") != nid:
+                    continue
+                t_port = e["target_port"]
+                fed.add(t_port)
+                src = e.get("source")
+                s_port = e.get("source_port")
+                if src == "universe":
+                    group = [dict(r) for r in universe_rows]
+                else:
+                    group = out_by_node.get(src, {}).get(s_port, [])
+                inputs[t_port] = merge_rows(inputs.get(t_port, []), group)
+            for port in spec.inputs:
+                if port.type == "symbolkey" and port.id not in fed:
+                    inputs[port.id] = [dict(r) for r in universe_rows]
 
-        # Assemble per-port inputs (auto-merge at junctions).
-        inputs: dict[str, list[dict[str, Any]]] = {}
-        fed: set[str] = set()
-        for e in edges:
-            if e.get("target") != nid:
+            result = NodeResult(node_id=nid, tool_id=spec.id)
+            primary = _primary_input(inputs)
+
+            # Skip (pre-emptive): pass rows through unchanged, mark skipped.
+            if control is not None and control.is_skipped(nid):
+                result.status = "skipped"
+                _store_outputs(spec, result, primary)
+                results[nid] = result
+                out_by_node[nid] = result.output_rows
+                _collect_report_rows(spec, result, nid, report_rows)
+                if on_node is not None:
+                    on_node(nid, spec.id, "skipped", len(primary), len(primary))
                 continue
-            t_port = e["target_port"]
-            fed.add(t_port)
-            src = e.get("source")
-            s_port = e.get("source_port")
-            if src == "universe":
-                group = [dict(r) for r in universe_rows]
-            else:
-                group = out_by_node.get(src, {}).get(s_port, [])
-            inputs[t_port] = merge_rows(inputs.get(t_port, []), group)
-        for port in spec.inputs:
-            if port.type == "symbolkey" and port.id not in fed:
-                inputs[port.id] = [dict(r) for r in universe_rows]
 
-        result = NodeResult(node_id=nid, tool_id=spec.id)
-        try:
-            rows = spec.callable(inputs, params) if spec.callable else []
-        except Exception as exc:  # node-level failure → degrade, keep going
-            result.error = str(exc)
-            degraded = True
-            _store_outputs(spec, result, [])
-            duration = int((time.perf_counter() - started) * 1000)
-            result.duration_ms = duration
+            # Pause checkpoint between nodes (blocks while paused, cancels).
+            if control is not None:
+                control.checkpoint()
+
+            # AI Search confirmation gate: block before a large search batch.
+            if spec.id == "search" and control is not None:
+                threshold = int(params.get("confirm_threshold") or 0)
+                if threshold > 0 and len(primary) > threshold and not control.is_skipped(nid):
+                    tavily = len(primary) * 2
+                    control.request_confirmation(nid, len(primary), tavily)
+                    if on_confirm is not None:
+                        on_confirm(nid, len(primary), tavily)
+                    decision = control.wait_confirmation(nid)
+                    if decision == "skip":
+                        result.status = "skipped"
+                        _store_outputs(spec, result, primary)
+                        results[nid] = result
+                        out_by_node[nid] = result.output_rows
+                        _collect_report_rows(spec, result, nid, report_rows)
+                        if on_node is not None:
+                            on_node(nid, spec.id, "skipped", len(primary), len(primary))
+                        continue
+                    if decision == "cancel":
+                        raise RunCancelled()
+
+            if on_node is not None:
+                on_node(nid, spec.id, "running", 0, 0)
+            started = time.perf_counter()
+
+            try:
+                rows = spec.callable(inputs, params) if spec.callable else []
+            except RunCancelled:
+                result.status = "cancelled"
+                results[nid] = result
+                out_by_node[nid] = result.output_rows
+                if on_node is not None:
+                    on_node(nid, spec.id, "cancelled", 0, 0)
+                raise
+            except Exception as exc:  # node-level failure → degrade, keep going
+                result.error = str(exc)
+                result.status = "error"
+                degraded = True
+                _store_outputs(spec, result, [])
+                result.duration_ms = int((time.perf_counter() - started) * 1000)
+                results[nid] = result
+                out_by_node[nid] = result.output_rows
+                if on_node is not None:
+                    on_node(nid, spec.id, "error", 0, 0)
+                continue
+
+            fwd, soft = _split_soft_failures(rows)
+            result.dropped = len(soft)
+            result.errors = _clean_errors(soft)
+            if spec.id == "scanner":
+                lane = str(params.get("family") or spec.id)
+                for r in fwd:
+                    r["_lane"] = lane
+            _store_outputs(spec, result, fwd)
+            result.duration_ms = int((time.perf_counter() - started) * 1000)
             results[nid] = result
             out_by_node[nid] = result.output_rows
+
             if on_node is not None:
-                on_node(nid, spec.id, "error", 0, 0)
-            continue
+                on_node(nid, spec.id, "ok", len(fwd), len(rows))
 
-        fwd, soft = _split_soft_failures(rows)
-        result.dropped = len(soft)
-        result.errors = _clean_errors(soft)
-        if spec.id == "scanner":
-            lane = str(params.get("family") or spec.id)
-            for r in fwd:
-                r["_lane"] = lane
-        _store_outputs(spec, result, fwd)
-        result.duration_ms = int((time.perf_counter() - started) * 1000)
-        results[nid] = result
-        out_by_node[nid] = result.output_rows
-
-        if on_node is not None:
-            on_node(nid, spec.id, "ok", len(fwd), len(rows))
-
-        # Collect report_rows output for the lane-merge table.
-        for p_id, rows_out in result.output_rows.items():
-            port = spec.output(p_id)
-            if port is not None and port.type == "report_rows":
-                report_rows.extend(
-                    {**r, "_source": nid} for r in rows_out
-                )
+            _collect_report_rows(spec, result, nid, report_rows)
+    except RunCancelled:
+        cancelled = True
+    finally:
+        if control_id is not None:
+            unregister_control(control_id)
 
     table = to_merge_table(report_rows)
     return GraphRunResult(
@@ -322,7 +380,28 @@ def run_graph(
         nodes=results,
         merge_table=table,
         degraded=degraded,
+        cancelled=cancelled,
     )
+
+
+def _primary_input(inputs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Merge every fed input port into a single row list (skip pass-through)."""
+    merged: list[dict[str, Any]] = []
+    for rows in inputs.values():
+        merged = merge_rows(merged, rows)
+    return merged
+
+
+def _collect_report_rows(
+    spec: ToolSpec,
+    result: NodeResult,
+    nid: str,
+    report_rows: list[dict[str, Any]],
+) -> None:
+    for p_id, rows_out in result.output_rows.items():
+        port = spec.output(p_id)
+        if port is not None and port.type == "report_rows":
+            report_rows.extend({**r, "_source": nid} for r in rows_out)
 
 
 def _store_outputs(

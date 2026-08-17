@@ -116,6 +116,7 @@ SEARCH_VARS: list[VariableDef] = [
     VariableDef("max_results", "Max results / symbol", "number", 5, "Query"),
     VariableDef("taxonomy_query", "Sector taxonomy query", "boolean", True, "Queries"),
     VariableDef("leadership_query", "Market leadership query", "boolean", True, "Queries"),
+    VariableDef("confirm_threshold", "Confirm above N symbols", "number", 50, "Confirmation"),
     VariableDef("prompt_template", "Compression prompt", "text", "Summarize the catalyst and leadership context for {symbol}.", "LLM"),
 ]
 

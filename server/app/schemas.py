@@ -82,3 +82,37 @@ class ComponentTemplateUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     component_id: str = Field(min_length=1)
     variables: dict[str, Any] = Field(default_factory=dict)
+
+
+CONTROL_ACTIONS = ("skip", "pause", "resume", "cancel", "confirm")
+CONFIRM_DECISIONS = ("proceed", "skip", "cancel")
+
+
+class ControlRequest(BaseModel):
+    """Body for POST /api/runs/{id}/control."""
+
+    action: str
+    node_id: Optional[str] = None
+    decision: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, v: str) -> str:
+        if v not in CONTROL_ACTIONS:
+            raise ValueError(f"unknown control action: {v}")
+        return v
+
+    @field_validator("decision")
+    @classmethod
+    def _known_decision(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in CONFIRM_DECISIONS:
+            raise ValueError(f"unknown confirm decision: {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ControlRequest":
+        if self.action in ("skip", "confirm") and not self.node_id:
+            raise ValueError(f"{self.action} requires node_id")
+        if self.action == "confirm" and self.decision is None:
+            raise ValueError("confirm requires decision")
+        return self

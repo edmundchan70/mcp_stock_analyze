@@ -62,6 +62,15 @@ class FakeRepo:
         if counts is not None:
             run["counts"] = counts
 
+    async def mark_interrupted_runs(self) -> int:
+        count = 0
+        for run in self.runs.values():
+            if run["status"] in ("queued", "running"):
+                run["status"] = "failed"
+                run["error"] = "server restarted — run interrupted"
+                count += 1
+        return count
+
     async def upsert_artifact(self, run_id: str, stage: str, payload: Any) -> None:
         self.artifacts.setdefault(run_id, {})[stage] = payload
 

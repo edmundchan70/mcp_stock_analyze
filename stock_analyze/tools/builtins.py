@@ -188,17 +188,20 @@ def _search_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> l
     from stock_analyze.agents.catalyst import enrich_with_catalysts
     from stock_analyze.agents.enrichment import enrich_with_vcp_context
     from stock_analyze.agents.rating import rate_ep_catalysts
+    from stock_analyze.tools.control import checkpoint_for
 
     rows = inputs.get("in") or []
     vcp_rows = [r for r in rows if _is_structural(r)]
     ep_rows = [r for r in rows if not _is_structural(r)]
+
+    checkpoint = checkpoint_for(params.get("__control_id__"))
 
     out: list[dict[str, Any]] = []
 
     # VCP path: Tavily dual-query enrichment (per-symbol soft-fail).
     if vcp_rows:
         context_map: dict[tuple[str, str], dict[str, Any]] = {}
-        enriched = enrich_with_vcp_context(vcp_rows)
+        enriched = enrich_with_vcp_context(vcp_rows, checkpoint=checkpoint)
         for c in enriched:
             item = c if isinstance(c, dict) else c.model_dump(mode="json")
             key = (str(item.get("symbol") or "").upper(), str(item.get("exchange") or "NASDAQ").upper())
@@ -214,8 +217,8 @@ def _search_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> l
 
     # EP path: catalyst search + LLM rating (Agent 2 + Agent 3 chain).
     if ep_rows:
-        enriched = enrich_with_catalysts(ep_rows)
-        rated = rate_ep_catalysts(enriched)
+        enriched = enrich_with_catalysts(ep_rows, checkpoint=checkpoint)
+        rated = rate_ep_catalysts(enriched, checkpoint=checkpoint)
         rated_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rated:
             item = r if isinstance(r, dict) else r.model_dump(mode="json")

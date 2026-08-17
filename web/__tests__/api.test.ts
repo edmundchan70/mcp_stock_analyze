@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRun, getRun, listRuns, subscribeToRunEvents } from "@/lib/api";
+import { controlRun, createRun, getRun, listRuns, subscribeToRunEvents } from "@/lib/api";
 
 const BASE = "http://localhost:8000";
 
@@ -46,6 +46,20 @@ describe("lib/api", () => {
   it("createRun throws on non-2xx", async () => {
     mockFetch({ detail: "bad" }, 422);
     await expect(createRun({ force_symbols: "" })).rejects.toThrow("422");
+  });
+
+  it("controlRun posts the action + node_id + decision", async () => {
+    mockFetch({ ok: true });
+    await controlRun("1", "confirm", "search_1", "proceed");
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${BASE}/api/runs/1/control`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ action: "confirm", node_id: "search_1", decision: "proceed" });
+  });
+
+  it("controlRun throws on non-2xx", async () => {
+    mockFetch({ detail: "already cancelled" }, 409);
+    await expect(controlRun("1", "cancel")).rejects.toThrow("409");
   });
 
   it("subscribeToRunEvents wires EventSource and forwards events", () => {

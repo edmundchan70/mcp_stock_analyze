@@ -99,7 +99,14 @@ export type RunStatus =
   | "queued"
   | "running"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelled";
+
+export interface ConfirmationState {
+  node_id: string;
+  symbol_count: number | null;
+  tavily_estimate: number | null;
+}
 
 export interface RunSummary {
   id: string;
@@ -110,6 +117,10 @@ export interface RunSummary {
   error: string | null;
   started_at: string | null;
   finished_at: string | null;
+  // live runtime-control state (attached while a graph run is in flight)
+  paused?: boolean;
+  skipped_nodes?: string[];
+  awaiting_confirmation?: ConfirmationState | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -118,7 +129,7 @@ export interface RunDetail extends RunSummary {
 }
 
 export interface RunEvent {
-  type: "stage" | "stage_done" | "fail" | "ticker_begin" | "ticker" | "ticker_end" | "console" | "node" | "done" | "failed";
+  type: "stage" | "stage_done" | "fail" | "ticker_begin" | "ticker" | "ticker_end" | "console" | "node" | "done" | "failed" | "cancelled" | "control" | "confirm_needed";
   text?: string;
   description?: string;
   total?: number;
@@ -134,6 +145,10 @@ export interface RunEvent {
   kept?: number;
   merge_table?: MergeTable;
   degraded?: boolean;
+  // runtime control (skip/pause/resume/cancel/confirm)
+  decision?: string;
+  symbol_count?: number;
+  tavily_estimate?: number;
 }
 
 export interface RatedStock {

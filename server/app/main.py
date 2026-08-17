@@ -29,6 +29,12 @@ async def _lifespan(app: FastAPI):
         raise RuntimeError("tool registry failed startup validation:\n" + "\n".join(registry_errors))
     repo = await connect_repo(get_database_url())
     try:
+        interrupted = await repo.mark_interrupted_runs()
+        if interrupted:
+            logger.info("marked %d interrupted run(s) as failed", interrupted)
+    except Exception:
+        logger.exception("marking interrupted runs failed")
+    try:
         await seed_default_definitions(repo)
     except Exception:
         logger.exception("seeding default pipeline definitions failed")

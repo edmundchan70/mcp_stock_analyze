@@ -1,21 +1,56 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { RunTable } from "@/components/RunTable";
 import { listRuns } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
+
+const SETTLED = new Set(["succeeded", "failed", "cancelled"]);
 
 export default function Home() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     listRuns()
-      .then(setRuns)
+      .then((rs) => {
+        setRuns(rs);
+        setError(null);
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+  }, []);
+
+  // Poll every 5s while any run is in flight; stop once all runs are settled.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const load = () => {
+      listRuns()
+        .then((rs) => {
+          if (cancelled) return;
+          setRuns(rs);
+          setLoading(false);
+          const allSettled = rs.every((r) => SETTLED.has(r.status));
+          if (!allSettled) {
+            timer = setTimeout(load, 5000);
+          }
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setError(String(e));
+          setLoading(false);
+        });
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   return (
@@ -46,7 +81,7 @@ export default function Home() {
       ) : error ? (
         <p className="text-rose-400">{error}</p>
       ) : (
-        <RunTable runs={runs} />
+        <RunTable runs={runs} onChanged={refresh} />
       )}
     </main>
   );
