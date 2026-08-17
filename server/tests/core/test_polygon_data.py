@@ -16,11 +16,14 @@ from stock_analyze.data.polygon import (
     _mic_to_exchange,
     _reset_client,
     batch_get_stock_data,
+    fetch_market_snapshot,
     fetch_spy,
     get_stock_data,
     get_stock_data_dict,
     get_stock_data_for_agent,
+    prefilter_snapshot,
     resolve_force_symbol,
+    resolve_market_caps,
     to_ep_row,
 )
 
@@ -286,6 +289,104 @@ class TestGetStockDataForAgent:
         result = get_stock_data_for_agent("UNKNOWN")
         assert isinstance(result, str)
         assert "No data" in result
+
+
+# ── market snapshot sweep ──────────────────────────────────────────
+
+
+def _make_snapshot(
+    ticker: str,
+    day_close: float,
+    day_volume: float,
+    prev_close: float,
+    prev_volume: float,
+    change: float = 0.5,
+) -> SimpleNamespace:
+    """Build a synthetic Polygon ``TickerSnapshot`` object."""
+    day = SimpleNamespace(
+        open=day_close - 0.2, high=day_close + 0.8, low=day_close - 0.8,
+        close=day_close, volume=day_volume, vwap=None, timestamp=None,
+        transactions=None, otc=None,
+    )
+    prev = SimpleNamespace(
+        open=prev_close - 0.2, high=prev_close + 0.8, low=prev_close - 0.8,
+        close=prev_close, volume=prev_volume, vwap=None, timestamp=None,
+        transactions=None, otc=None,
+    )
+    return SimpleNamespace(
+        ticker=ticker, day=day, prev_day=prev,
+        todays_change=None, todays_change_percent=change,
+        updated=None, fair_market_value=None,
+    )
+
+
+class TestMarketSnapshot:
+    @patch("stock_analyze.data.polygon._get_client")
+    def test_returns_rows_preferring_prev_day(self, mock_client):
+        client = MagicMock()
+        client.get_snapshot_all.return_value = [
+            _make_snapshot("AAPL", 150.0, 1_000, 149.0, 2_000_000, 1.2),
+            _make_snapshot("MSFT", 400.0, 1_000, 399.0, 3_000_000, -0.4),
+        ]
+        mock_client.return_value = client
+
+        _reset_client()
+        rows = fetch_market_snapshot()
+
+        assert len(rows) == 2
+        assert rows[0]["symbol"] == "AAPL"
+        assert rows[0]["exchange"] == "NASDAQ"
+        assert rows[0]["price"] == 149.0  # prev_day close wins
+        assert rows[0]["dollar_volume_proxy"] == pytest.approx(149.0 * 2_000_000)
+        assert rows[0]["change_pct"] == 1.2
+        assert rows[1]["symbol"] == "MSFT"
+
+    @patch("stock_analyze.data.polygon._get_client")
+    def test_returns_empty_on_failure(self, mock_client):
+        client = MagicMock()
+        client.get_snapshot_all.side_effect = Exception("snapshot down")
+        mock_client.return_value = client
+
+        _reset_client()
+        assert fetch_market_snapshot() == []
+
+
+class TestPrefilterSnapshot:
+    def test_filters_price_and_dollar_volume(self):
+        rows = [
+            {"symbol": "A", "price": 5.0, "dollar_volume_proxy": 50_000_000},    # price too low
+            {"symbol": "B", "price": 20.0, "dollar_volume_proxy": 1_000_000},   # dollar vol too low
+            {"symbol": "C", "price": 20.0, "dollar_volume_proxy": 50_000_000},  # passes
+            {"symbol": "D", "price": None, "dollar_volume_proxy": None},         # missing
+        ]
+        out = prefilter_snapshot(rows, min_price=10.0, min_dollar_vol=10_000_000)
+        assert [r["symbol"] for r in out] == ["C"]
+
+
+class TestResolveMarketCaps:
+    @patch("stock_analyze.data.polygon.resolve_force_symbol")
+    def test_keeps_only_above_min_mcap(self, mock_resolve):
+        def _resolve(sym):
+            if sym == "SMALL":
+                return {
+                    "name": "NASDAQ:SMALL", "symbol": "SMALL", "exchange": "NASDAQ",
+                    "market_cap": 100_000_000, "description": "", "close": None,
+                }
+            if sym == "MISSING":
+                return None
+            return {
+                "name": "NASDAQ:BIG", "symbol": sym, "exchange": "NASDAQ",
+                "market_cap": 5_000_000_000, "description": "", "close": None,
+            }
+
+        mock_resolve.side_effect = _resolve
+        out = resolve_market_caps(["BIG", "SMALL", "MISSING"], min_mcap=300_000_000)
+        assert [r["symbol"] for r in out] == ["BIG"]
+
+    @patch("stock_analyze.data.polygon.resolve_force_symbol")
+    def test_empty_input(self, mock_resolve):
+        assert resolve_market_caps([]) == []
+        mock_resolve.assert_not_called()
 
 
 # ── integration tests (real Polygon API, skipped without key) ─────

@@ -79,12 +79,15 @@ def rate_ep_catalysts(
     search_news: Optional[SearchNewsFn] = None,
     rate_catalyst: Optional[RateFn] = None,
     on_ticker: Optional[TickerFn] = None,
+    checkpoint: Optional[Callable[[], None]] = None,
 ) -> list[EpRatedStock]:
     """Rate Agent 2 stocks for EP catalyst fit. Soft-fails per symbol. Sorted best→worst.
 
     When ``on_ticker`` is given, it is called as
     ``on_ticker(index, total, symbol, action)`` before each network call so a
     Run Progress reporter can show which symbol is being worked on.
+    ``checkpoint``, when given, is called at the top of each symbol loop to
+    pause/cancel the run (raises ``RunCancelled`` on cancel).
     """
     if search_news is None or rate_catalyst is None:
         load_dotenv()
@@ -95,6 +98,8 @@ def rate_ep_catalysts(
     rated: list[EpRatedStock] = []
     total = len(stocks)
     for index, raw in enumerate(stocks, start=1):
+        if checkpoint is not None:
+            checkpoint()
         base = _as_stock_dict(raw)
         symbol = str(base.get("symbol") or "").upper()
         try:

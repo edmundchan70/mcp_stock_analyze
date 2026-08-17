@@ -52,14 +52,14 @@ def passes_vcp_gate(rating: VcpStructuralRating) -> bool:
 
 # ── Market-Cap Gate ──────────────────────────────────────────────
 
-MIN_MARKET_CAP = 100_000_000  # $100M — matches old TradingView screener pre-filter
+MIN_MARKET_CAP = 300_000_000  # $300M — strict gate floor shared by VCP/BO (post-screener)
 
 
 def passes_market_cap_gate(
     market_cap: float | None,
     min_mcap: float = MIN_MARKET_CAP,
 ) -> bool:
-    """Post-screener replacement: market_cap >= $100M hard gate.
+    """Post-screener replacement: market_cap >= $300M hard gate.
 
     None / missing market_cap always rejects (conservative).
     """

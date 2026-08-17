@@ -1,4 +1,13 @@
-import type { RunDetail, RunEvent, RunSummary } from "./types";
+import type {
+  ComponentTemplate,
+  GraphDefinition,
+  PipelineDefinition,
+  PreviewResponse,
+  RunDetail,
+  RunEvent,
+  RunSummary,
+  ToolSpec,
+} from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -43,7 +52,7 @@ export function subscribeToRunEvents(id: string, onEvent: (e: RunEvent) => void)
     onEvent(event);
     // The server closes the stream after a terminal event; prevent EventSource
     // from auto-reconnecting (which would replay "done" forever).
-    if (event.type === "done" || event.type === "failed") {
+    if (event.type === "done" || event.type === "failed" || event.type === "cancelled") {
       es.close();
     }
   };
@@ -58,3 +67,79 @@ export const PIPELINE_LABELS: Record<string, string> = {
   daily_vcp_scan: "VCP",
   daily_bo_scan: "Qullamaggie BO",
 };
+
+// ── component graph editor API (T13/T20/T22) ───────────────────────
+
+export async function listTools(): Promise<ToolSpec[]> {
+  const res = await fetch(`${BASE}/api/tools`);
+  const data = await handle<{ tools: ToolSpec[] }>(res);
+  return data.tools;
+}
+
+export async function listDefinitions(): Promise<PipelineDefinition[]> {
+  const res = await fetch(`${BASE}/api/definitions`);
+  const data = await handle<{ definitions: PipelineDefinition[] }>(res);
+  return data.definitions;
+}
+
+export async function saveDefinition(body: { name: string; graph: GraphDefinition }, id?: string): Promise<PipelineDefinition> {
+  const res = await fetch(`${BASE}/api/definitions/${id ?? ""}`, {
+    method: id ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handle<PipelineDefinition>(res);
+}
+
+export async function deleteDefinition(id: string): Promise<void> {
+  await fetch(`${BASE}/api/definitions/${id}`, { method: "DELETE" });
+}
+
+export async function listComponentTemplates(): Promise<ComponentTemplate[]> {
+  const res = await fetch(`${BASE}/api/component-templates`);
+  const data = await handle<{ templates: ComponentTemplate[] }>(res);
+  return data.templates;
+}
+
+export async function saveComponentTemplate(body: Omit<ComponentTemplate, "id">): Promise<ComponentTemplate> {
+  const res = await fetch(`${BASE}/api/component-templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handle<ComponentTemplate>(res);
+}
+
+export async function deleteComponentTemplate(id: string): Promise<void> {
+  await fetch(`${BASE}/api/component-templates/${id}`, { method: "DELETE" });
+}
+
+export async function previewRun(body: Record<string, unknown>): Promise<PreviewResponse> {
+  const res = await fetch(`${BASE}/api/runs/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handle<PreviewResponse>(res);
+}
+
+/**
+ * Apply a runtime control action to an in-flight graph run
+ * (skip / pause / resume / cancel / confirm).
+ */
+export async function controlRun(
+  id: string,
+  action: string,
+  nodeId?: string,
+  decision?: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/runs/${id}/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, node_id: nodeId, decision }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${text.slice(0, 200)}`);
+  }
+}

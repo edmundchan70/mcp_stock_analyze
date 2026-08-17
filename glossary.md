@@ -11,11 +11,12 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **RVOL10** | `volume / 10-day average volume`. |
 | **Event Day Dollar Volume** | Dollars traded on the gap day. |
 | **Average Daily Dollar Volume** | Typical daily dollars traded over ~50 days (pre-gap liquidity). Computed from Polygon.io OHLCV data. |
-| **Force Include** | Pasted symbol list. Fast regex pre-parser for clean ticker lists (1–5 char, comma-separated); falls through to cheap LLM for messy/mixed text. On confirm is **the sole Universe** (paste-mandatory; screener removed). |
+| **Force Include** | Pasted symbol list. Fast regex pre-parser for clean ticker lists (1–5 char, comma-separated); falls through to cheap LLM for messy/mixed text. The manual Universe (paste). Market-wide BO runs skip paste and use the snapshot sweep instead. |
 | **Force Include Parse Result** | `ForceIncludeParseResult` dataclass (`force_include.py:37`): symbols (list[`SymbolKey`]), rejected (unparseable tokens), errors (parsing errors). |
 | **Fast Parse** | Regex pre-parser in Force Include that matches clean `[A-Za-z]{1,5}` tokens without calling the LLM. Falls through to LLM on any ambiguous token. |
-| **Universe** | Symbols in one scan: force-only (`universe_source=force`). Paste-mandatory post-Polygon migration (screener removed). |
-| **Universe Source** | Literal `"force"` only — origin of the symbol set for a scan. Screener has been removed; only paste (force) is supported. |
+| **Universe** | Symbols in one scan: paste (`universe_source=force`) or market-wide sweep (`universe_source=snapshot`, BO only). |
+| **Universe Source** | Origin of the symbol set for a scan: `"force"` (pasted list) or `"snapshot"` (Polygon market-wide sweep). |
+| **Market Snapshot Sweep** | Polygon Snapshot universe discovery (`/v2/snapshot/locale/us/markets/stocks/tickers`): fetch all active US tickers → price/liquidity prefilter → per-symbol market-cap resolution → batch OHLCV. Snapshot alternative to paste for any family. `fetch_market_snapshot()` / `prefilter_snapshot()` / `resolve_market_caps()` (`data/polygon.py`). |
 | **SymbolKey** | `(symbol: str, exchange: str)` tuple, e.g. `("AAPL", "NASDAQ")`. Unique identifier used for force-include dedup, merge, and resolution. |
 | **Apply Gate filter** | Fetch metrics, apply Baseline/Strict; only survivors continue. Auto always; Manual choice after paste. |
 | **Run all pasted** | Manual-only: fetch metrics for all pasted names, skip gates, continue all to Catalyst. |
@@ -43,7 +44,7 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **RunResult** | `RunResult` dataclass (`pipeline.py:64`): exit_code, run_dir, steps_completed, error. Returned by `run_daily()`. |
 | **Run Progress** | Live terminal timeline of a Daily Run: persistent stage lines (Agent 1 / Catalyst / EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only, not persisted to Run Artifacts. The batch OHLCV phase gets its own Rich progress bar with elapsed time and ETA, throttled every 5 fetches to avoid flicker. (`progress.py:49`) |
 | **Polygon.io** | Official stock market data API (`polygon-api-client` SDK). Replaces TradingView (tvDatafeed + tradingview_screener) as the sole data source. Provides Ticker Details (symbol resolution, exchange, market cap) and daily aggregate bars (OHLCV). Polyfill for the removed Screener Pre-Filter via `passes_market_cap_gate()`. Config via `POLYGON_API_KEY` in `.env`. (`polygon.py:24`) |
-| **Market Cap Gate** | Post-screener replacement: `passes_market_cap_gate()` enforces `market_cap >= MIN_MARKET_CAP` ($100M). None/missing always rejects (conservative). Applied post-symbol-resolution, pre-OHLCV-fetch in VCP/BO runners. (`scanners/vcp/gates.py:33`) |
+| **Market Cap Gate** | Post-screener replacement: `passes_market_cap_gate()` enforces `market_cap >= MIN_MARKET_CAP` ($300M). None/missing always rejects (conservative). Applied post-symbol-resolution, pre-OHLCV-fetch in VCP/BO runners. (`scanners/vcp/gates.py:33`) |
 | **Run Log** | `run.log` file written to the run directory alongside JSON artifacts. Captures all `logger` output (INFO, WARNING, ERROR) from every module in the pipeline chain (Polygon OHLCV, scanners, enrichment agents, rating agents) with timestamps and module names. Added via `FileHandler` to root logger in `_run_log()` context manager (`pipeline.py:38`), removed on completion/failure. |
 | **Pre-market Data** | Minute-level aggregate bars for the current day's pre-market window (4:00 AM – 9:30 AM Eastern). Fetched via `fetch_premarket_aggs(symbol)` (`polygon.py:380`) using Polygon.io `get_aggs(timespan="minute")` with Unix timestamp millisecond boundaries. Returns DataFrame with open/high/low/close/volume. Summarized by `get_premarket_data(symbol)` returning premarket high/low/close/volume/VWAP. |
 | **Premarket Window** | 4:00 AM – 9:30 AM Eastern Time. Hardcoded constants in `polygon.py:18-21`: `_PREMARKET_START_HOUR=4`, `_PREMARKET_END_HOUR=9`, `_PREMARKET_END_MINUTE=30`. Window boundaries computed daily in `_premarket_window()` (`polygon.py:372`) using ET-aware datetime arithmetic and converted to Unix millisecond timestamps for Polygon API. |
@@ -68,7 +69,7 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 
 | Order | Gate | Type | When Applied | On Failure | Gated? |
 |---|---|---|---|---|---|
-| **Gate 1** | **Market Cap Gate** — `passes_market_cap_gate()` (`gates.py:33`) | Post-screener replacement: market_cap ≥ `MIN_MARKET_CAP` ($100M). Resolved via Polygon Ticker Details. None/missing always rejects. | Post-symbol-resolution, pre-OHLCV-fetch. **Always enforced** — replaces old TradingView screener pre-filter. | Silently skipped (no entry in any bucket). | Always |
+| **Gate 1** | **Market Cap Gate** — `passes_market_cap_gate()` (`gates.py:33`) | Post-screener replacement: market_cap ≥ `MIN_MARKET_CAP` ($300M). Resolved via Polygon Ticker Details. None/missing always rejects. | Post-symbol-resolution, pre-OHLCV-fetch. **Always enforced** — replaces old TradingView screener pre-filter. | Silently skipped (no entry in any bucket). | Always |
 | **Gate 2** | **Liquidity Gate** — `passes_liquidity_gate()` (`gates.py:29`) | Hard pre-requisite: 60d ADV$ ≥ `MIN_ADV_DOLLAR` ($10M) computed pure-math from OHLCV DataFrame (`avg_volume × close` over last 60 bars). | Post-OHLCV-fetch, pre-VCP-scoring. **Always enforced** — even in "Run all pasted" mode. | Silently skipped (no entry in any bucket). Protects against force-included illiquid stocks. | Always |
 | **Gate 3** | **Stage 2 Trend Template** — `passes_stage2_gate()` (`gates.py:43`) | RS ≥ 70 AND `is_stage2=True` (price > 50/200 SMA, rising 200 SMA). | Post-VCP-scoring, only if `apply_gates=True`. | Downgraded to 3★ but still appears in 3★ bucket for visibility. | `apply_gates` |
 | **Gate 4** | **VCP Structural Gate** — `passes_vcp_gate()` (`gates.py:48`) | `structural_rating ≥ 4`. Only 4–5★ survivors pass to Agent 2/3 (context enrichment + final report). | Post-detection classification, only if `apply_gates=True`. | Stays in 3★ bucket; no Tavily enrichment, no final report. | `apply_gates` |
@@ -123,7 +124,7 @@ When a user pastes symbols, the pipeline resolves them via Polygon.io:
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (VCP)** | VCP Structural Scanner | Polygon force-include merge → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $100M) → Liquidity gate (ADV$ ≥ $10M) → Stage 2 gate → VCP pattern detection (pure math, 9 params) → 1–5★ classification into buckets. | `scanners/vcp/runner.py:72` |
+| **Agent 1 (VCP)** | VCP Structural Scanner | Polygon force-include merge → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $300M) → Liquidity gate (ADV$ ≥ $10M) → Stage 2 gate → VCP pattern detection (pure math, 9 params) → 1–5★ classification into buckets. | `scanners/vcp/runner.py:72` |
 | **Agent 2 (VCP)** | VCP Context Enrichment | Tavily dual-query per symbol (taxonomy + leadership, parallel) → OpenRouter LLM parses into `VcpContextEnrichment` → applies down-only caps. Only 4–5★ survivors (or all pasted if Run All). | `agents/enrichment.py:164` |
 | **Agent 3 (VCP)** | VCP Final Report | Merge structural rating + context enrichment → apply cap rules → sort final_rating desc → write ranked artifact. | `pipeline.py:353` |
 
@@ -194,7 +195,7 @@ When a user pastes symbols, the pipeline resolves them via Polygon.io:
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (BO)** | BO Structural Scanner | Polygon force-include merge → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $100M) → Liquidity gate (ADV$ ≥ $10M) → BO setup detection (prior impulse, ADR envelope, VCI, MA stack, KDE pivot, higher lows, volume signature = dry-up + surge) → 3–5★ classification into buckets. | `scanners/bo/runner.py:81` |
+| **Agent 1 (BO)** | BO Structural Scanner | Polygon force-include merge (paste) or snapshot sweep → batch OHLCV fetch → SPY RS line → Market cap gate (≥ $300M) → Liquidity gate (ADV$ ≥ $10M) → BO setup detection (prior impulse, ADR envelope, VCI, MA stack, KDE pivot, higher lows, volume signature = dry-up + surge) → 3–5★ classification into buckets. | `scanners/bo/runner.py:81` |
 | **Agent 2 (BO)** | BO Context Enrichment | Reuses VCP Tavily dual-query enrichment (`enrich_with_vcp_context`). Only 4–5★ survivors (or all pasted if Run All). | `agents/enrichment.py:246` |
 | **Agent 3 (BO)** | BO Final Report | Merge setup rating + context enrichment → apply down-only caps (reuse `apply_vcp_caps`) → sort final_rating desc → write ranked artifact. | `pipeline.py:execute_bo_enrichment` |
 
@@ -244,9 +245,54 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 
 | Term | Meaning |
 |------|---------|
-| **Run (DB record)** | A persisted scan execution in the `runs` table: `id`, `name`, `pipeline_type`, `status`, `params` (JSONB), `counts` (JSONB), `error`, `started_at`, `finished_at`. Status lifecycle: `queued → running → succeeded \| failed`. Managed by `Repo` (`server/app/db.py`). |
+| **Run (DB record)** | A persisted scan execution in the `runs` table: `id`, `name`, `pipeline_type`, `status`, `params` (JSONB), `counts` (JSONB), `error`, `started_at`, `finished_at`. Status lifecycle: `queued → running → succeeded \| failed \| cancelled`. Managed by `Repo` (`server/app/db.py`). |
 | **Run Artifacts (DB)** | The `run_artifacts` table: one JSONB `payload` per `(run_id, stage)` where stage ∈ `meta` \| `agent1` \| `agent2` \| `agent3`. Upserted from `read_artifacts()` after `run_daily()` finishes (`server/app/jobs.py`). |
 | **EventReporter** | `RunProgress` duck-type adapter (`server/app/reporter.py`) that marshals `stage` / `stage_done` / `fail` / `begin_ticker` / `ticker` / `end_ticker` / `console.print` calls onto an asyncio.Queue via `loop.call_soon_threadsafe` (pipeline runs in a worker thread). |
 | **JobManager** | Registry of in-flight runs: one event queue + one `asyncio.Task` per run id (`server/app/jobs.py:JobManager`). |
 | **SSE Progress** | `GET /api/runs/{id}/events` streams `progress` events (each with a `type` field = reporter event) and a terminal `done`/`failed` event; replays a terminal event from the DB if the run already finished. |
 | **Scan Job** | `run_scan_job()`: builds `RunConfig` from the request body (sharing `parse_force_include_text` with the CLI), runs `run_daily()` via `asyncio.to_thread`, then reads artifacts back and persists to Postgres. |
+
+---
+
+## Component Pipeline Editor (spec)
+
+| Term | Meaning |
+|------|---------|
+| **Pipeline Definition** | A named, saved graph of Components + per-Component inspector variables, persisted independently of any Run. Universe (paste/sweep/Force Include) is per-Run, not part of the Definition. `graph` JSONB = `{nodes: [{id, type, position, variables}], edges: [{id, source, sourceHandle, target, targetHandle}]}`. |
+| **Component** | One draggable canvas tool from the palette: Scanner (R1), Quant Filter/Gate (R2), AI Search (R3), Report (R4). Added via the floating **+** button. Settings panels write `node.data.variables`. Registered custom tools surface as per-entry palette items. |
+| **Component Template** | A saved `{component_id, variables}` snapshot — a component's config, quick-added from the palette or applied in the inspector. Stored in the `component_templates` table. |
+| **Graph Template** | A saved graph (`nodes` + `edges` + variables); stored as a Pipeline Definition. Saved/loaded in the editor header. |
+| **Row** | The unit of data flowing between components: `{symbol, exchange}` plus opaque extra columns. `report_rows` rows must carry a numeric rating. |
+| **Port Stage** | The 5 canonical row stages a Port is typed with: `symbolkey` / `scan_rows` / `filtered_rows` / `enriched_rows` / `report_rows`. Wiring legality = port-stage assignability only (relaxed ordering; skip edges legal, e.g. Scanner → Report). |
+| **Input Accepts** | The assignability matrix: `filtered_rows` accepts `scan_rows\|filtered_rows`; `enriched_rows` accepts `scan_rows\|filtered_rows\|enriched_rows`; `report_rows` accepts `scan_rows\|filtered_rows\|enriched_rows`. Canonical source: `INPUT_ACCEPTS` in `stock_analyze/tools/protocol.py` (server) mirrored by `web/lib/graph.ts` (canvas `isValidConnection`). |
+| **Auto-merge** | Junctions dedupe by SymbolKey before a tool runs: one row per symbol, column union, first-wins, stable order. Fan-out copies row streams. |
+| **Soft-fail Degraded Row** | A row whose per-symbol step throws is carried forward with an `error` marker instead of aborting the batch. Hard failures (bad params, unconnected required ports) fail the run fast. |
+| **Universe Node** | The auto-seeded start node (`type:"universe"`, off the palette): one `out` Port emitting `symbolkey`, fanned out to Scanners. Runtime-bound — the Definition stores the node + edges, the Run binds the symbol source (paste/sweep/Force Include). |
+| **ToolSpec** | The registry protocol in `stock_analyze/tools/`: `id, name, description, phase (1-4), inputs/outputs (PortDef, 5 canonical stages only), variables (VariableDef), callable (inputs: dict[port_id, list[dict]], params: dict) -> list[dict]`. Registered via `@register("id")`; `get_tools()` serves the palette (`GET /api/tools`). |
+| **Run Snapshot** | Frozen graph JSON copied onto a Run at start (`runs.graph_snapshot`); edits to the Definition do not alter historical Runs. |
+| **Lane** | One path from Universe to a terminal component; parallel lanes merge by SymbolKey into the lane-merge table. |
+| **Lane-Merge Table** | The graph-run results view: one row per symbol, with lanes, a normalized rating, and the source components. Rating precedence: `final_rating -> ep_rating -> funnel_stars -> structural_rating/setup_rating -> none`. |
+| **Preview Estimate** | `POST /api/runs/preview` — runs the Universe snapshot + prefilter (1 call) and returns `{symbol_count, estimated_seconds}` so the user can confirm Polygon cost before a graph run. `estimated_seconds = ceil(symbol_count × calls_per_symbol / effective_calls_per_min)`. |
+| **Scanner Family** | The Scanner's `family` variable (`ep`/`vcp`/`bo`/`custom`, renamed from the stub's `ep_gap`) swaps which threshold groups the inspector shows. |
+| **Daily Preset Definition** | One of three full-chain canvas definitions seeded into `pipeline_definitions` at server boot by `server/app/seed.py`: `Daily VCP Scan`, `Daily BO Scan`, `Daily EP Scan` (each `Universe → Scanner → AI Search → Report`). Seed-if-absent **by name** (idempotent, self-healing — user edits survive, deletions resurrect). The universe-source default is carried as `graph.defaults.universe_source` (`"snapshot"` for BO, `"paste"` for VCP/EP); the walker ignores this extra top-level key. |
+
+---
+
+## Runtime Control (graph runs)
+
+| Term | Meaning |
+|------|---------|
+| **Runtime Control** | Interactive, in-flight control of a component graph run: skip / pause / resume / cancel, plus an AI-Search confirmation gate. Scope: graph runs only (not legacy `run_daily`). |
+| **RunControl** | Thread-safe per-run control object (`server/app/control.py:21`) owned by `JobManager._controls`. Guards a skip set, pause/cancel `threading.Event`s, and confirm-gate state with `threading.Lock`. |
+| **RunCancelled** | Cooperative cancel exception (`stock_analyze/tools/control.py:20`) raised at the next checkpoint once cancel is armed; the job maps it to `cancelled` status. |
+| **Checkpoint** | A blocking callable the search agents call at per-symbol boundaries (`RunControl.checkpoint`). Returns immediately while running, freezes (drain-then-freeze) while paused, raises `RunCancelled` once cancelled. |
+| **Skip (pass-through)** | Pre-emptive node skip: the node's input rows flow through unchanged and `NodeResult.status = skipped`; Report still produces a table. Skip-after-started is a no-op. |
+| **Pause / Resume** | Pause freezes the walker at the next checkpoint (between nodes or at the next per-symbol boundary; in-flight ≤5 Tavily/LLM calls drain). Resume clears the flag. |
+| **Cancel** | Graceful: stop scheduling new work at the next checkpoint, mark the run `cancelled`, persist partial artifacts. Also resolves a pending confirmation gate. |
+| **Confirmation Gate** | Pre-AI-Search block: when the `search` node's input rows exceed `confirm_threshold` (default 50, 0 = off), the run blocks and emits `confirm_needed`; user picks `proceed` / `skip` / `cancel`. Armed skip suppresses the gate (skip-wins). |
+| **`confirm_threshold`** | AI-Search `SEARCH_VARS` variable (`stock_analyze/tools/variables.py:119`): "Confirm above N symbols", default 50. |
+| **Awaiting Confirmation** | Persistent run state (dashboard + run detail) while a node is blocked on the gate; cancelable there. Exposed via `RunControl.pending_confirmation()` and `_attach_control_state`. |
+| **`__control_id__`** | JSON-safe opaque token injected into each node's `params` by `run_graph`; `_search_callable` recovers the `RunControl` via `checkpoint_for` to populate the agents' `checkpoint` kwarg. |
+| **Interrupted-Run Reconciliation** | On server startup, `Repo.mark_interrupted_runs()` (`server/app/db.py:137`) marks orphaned `queued`/`running` rows `failed` with error `server restarted — run interrupted`. |
+| **Control Endpoint** | `POST /api/runs/{id}/control` (`server/app/routes/runs.py:199`) with actions `skip|pause|resume|cancel|confirm` (confirm carries `decision: proceed|skip|cancel` + `node_id`). |
+| **`node:<id>` Artifact** | Per-node artifact persisted on graph-run completion/cancel: `{tool_id, status, output_rows, errors, dropped, duration_ms, error}` (`server/app/jobs.py:145`). Used to reconstruct node progress for late SSE subscribers. |

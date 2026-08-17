@@ -23,6 +23,12 @@ import pandas as pd
 from dotenv import load_dotenv
 from polygon import RESTClient as PolygonRESTClient
 
+from stock_analyze.scanners.vcp.gates import (
+    MIN_ADV_DOLLAR,
+    MIN_MARKET_CAP,
+    passes_market_cap_gate,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── Pre-market hours (Eastern) ───────────────────────────────────
@@ -260,6 +266,113 @@ def resolve_force_symbol(symbol: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Polygon: ticker details failed for %s: %s", symbol, exc)
         return None
+
+
+# ── market snapshot (full-universe sweep) ───────────────────────
+
+
+def fetch_market_snapshot() -> list[dict[str, Any]]:
+    """Fetch the full US equities snapshot via Polygon Snapshot API.
+
+    ``/v2/snapshot/locale/us/markets/stocks/tickers`` returns every actively
+    traded US ticker in one response (no market cap). Returns rows:
+
+        {symbol, exchange, price, dollar_volume_proxy, change_pct}
+
+    ``price`` / ``dollar_volume_proxy`` come from the previous full-day bar
+    (falling back to today's partial bar intraday). Exchange is a placeholder;
+    the real exchange + market cap are resolved later via Ticker Details.
+    """
+    client = _get_client()
+    try:
+        snapshots = client.get_snapshot_all(market_type="stocks")
+    except Exception as exc:
+        logger.warning("Polygon market snapshot failed: %s", exc)
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for snap in snapshots:
+        ticker = getattr(snap, "ticker", None)
+        if not ticker:
+            continue
+        day = getattr(snap, "day", None)
+        prev = getattr(snap, "prev_day", None)
+        # Prefer the prior full-day bar for a stable after-close dollar-volume
+        # estimate; fall back to today's (partial) bar during the session.
+        ref = prev if prev is not None else day
+        price: Optional[float] = None
+        dollar_volume_proxy: Optional[float] = None
+        if ref is not None:
+            close = getattr(ref, "close", None)
+            volume = getattr(ref, "volume", None)
+            if close is not None:
+                price = float(close)
+            if close is not None and volume is not None:
+                dollar_volume_proxy = float(close) * float(volume)
+        rows.append({
+            "symbol": str(ticker).upper(),
+            "exchange": "NASDAQ",
+            "price": price,
+            "dollar_volume_proxy": dollar_volume_proxy,
+            "change_pct": getattr(snap, "todays_change_percent", None),
+        })
+    logger.info("Polygon market snapshot: %d tickers", len(rows))
+    return rows
+
+
+def prefilter_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    min_price: float = 10.0,
+    min_dollar_vol: float = MIN_ADV_DOLLAR,
+) -> list[dict[str, Any]]:
+    """Trim snapshot rows by price and single-day dollar-volume proxy.
+
+    Runs before the (expensive, per-symbol) market-cap resolution so only
+    liquid, mid-to-large names reach Ticker Details.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        price = row.get("price")
+        dollar_volume_proxy = row.get("dollar_volume_proxy")
+        if price is None or dollar_volume_proxy is None:
+            continue
+        if float(price) < min_price:
+            continue
+        if float(dollar_volume_proxy) < min_dollar_vol:
+            continue
+        out.append(row)
+    return out
+
+
+def resolve_market_caps(
+    symbols: list[str],
+    *,
+    min_mcap: float = MIN_MARKET_CAP,
+    max_workers: int = 10,
+) -> list[dict[str, Any]]:
+    """Resolve market cap via Polygon Ticker Details for each symbol.
+
+    Reuses ``resolve_force_symbol`` (one call per symbol); keeps only symbols
+    with ``market_cap >= min_mcap``. Preserves input order.
+    """
+    if not symbols:
+        return []
+
+    def _resolve(symbol: str) -> Optional[dict[str, Any]]:
+        details = resolve_force_symbol(symbol)
+        if details is None:
+            return None
+        if passes_market_cap_gate(details.get("market_cap"), min_mcap=min_mcap):
+            return details
+        return None
+
+    resolved: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for result in ex.map(_resolve, symbols):
+            if result is not None:
+                resolved.append(result)
+    return resolved
 
 
 def to_ep_row(symbol: str, n_bars: int = 300) -> dict[str, Any]:

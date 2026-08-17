@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ForceKey = SymbolKey
-UniverseSource = str  # "force" (screener removed)
+UniverseSource = str  # "force" (paste) | "snapshot" (market sweep)
 
 
 def _fetch_spy() -> pd.DataFrame:
@@ -37,8 +37,12 @@ def merge_bo_force_rows(
     screener_rows: Iterable[Mapping[str, Any]],
     force_keys: Sequence[ForceKey],
     force_rows: Sequence[Mapping[str, Any]],
+    universe_source: UniverseSource = "force",
 ) -> tuple[List[dict[str, Any]], Set[ForceKey], UniverseSource]:
-    """Merge screener + force-include rows; force rows only (screener removed).
+    """Merge screener + force-include rows; screener rows win on duplicate.
+
+    ``universe_source`` is stamped onto the returned tuple (``"force"`` for
+    paste mode, ``"snapshot"`` for the market-wide sweep).
 
     Returns (merged_rows, force_key_set, universe_source).
     """
@@ -52,9 +56,8 @@ def merge_bo_force_rows(
             by_key[key] = dict(row)
 
     force_set = {(s.upper(), e.upper()) for s, e in force_keys}
-    source: UniverseSource = "force"  # paste-only post-migration
 
-    return list(by_key.values()), force_set, source
+    return list(by_key.values()), force_set, universe_source
 
 
 def run_bo_scan(
@@ -74,6 +77,7 @@ def run_bo_scan(
     """
     merged, _, source = merge_bo_force_rows(
         screener_rows, force_keys or [], force_rows or [],
+        universe_source=universe_source,
     )
 
     # Build symbol list for batch fetch

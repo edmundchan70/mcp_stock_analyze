@@ -76,6 +76,30 @@ async def test_create_run_validation():
 
 
 @pytest.mark.asyncio
+async def test_create_run_sweep_no_symbols(monkeypatch, tmp_path):
+    """use_screener=True allows an empty force_symbols (market sweep)."""
+    run_dir = _write_fixture_run_dir(tmp_path)
+    monkeypatch.setattr(
+        "app.jobs.run_daily",
+        lambda config, reporter=None: RunResult(0, run_dir, ["agent1", "agent3"]),
+    )
+
+    app = create_app(repo=FakeRepo())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/runs",
+            json={"name": "sweep", "pipeline_type": "daily_bo_scan", "use_screener": True, "force_symbols": ""},
+        )
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+        await app.state.job_manager.tasks[run_id]
+
+        detail = await client.get(f"/api/runs/{run_id}")
+        assert detail.json()["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_list_and_get_404():
     app = create_app(repo=FakeRepo())
     transport = httpx.ASGITransport(app=app)

@@ -97,6 +97,32 @@ class TestExecuteBoScan:
             execute_bo_scan(limit=300, apply_gates=True)
 
 
+class TestExecuteBoSweep:
+    @patch("stock_analyze.pipeline.run_bo_scan")
+    @patch("stock_analyze.pipeline.resolve_market_caps")
+    @patch("stock_analyze.pipeline.prefilter_snapshot")
+    @patch("stock_analyze.pipeline.fetch_market_snapshot")
+    def test_execute_bo_scan_sweep(self, mock_snapshot, mock_prefilter, mock_resolve, mock_scan):
+        from stock_analyze.models.bo import BoScanBucket
+
+        snap = [{"symbol": "AAPL", "price": 150.0, "dollar_volume_proxy": 1_000_000_000}]
+        mock_snapshot.return_value = snap
+        mock_prefilter.return_value = snap
+        mock_resolve.return_value = [
+            {"name": "NASDAQ:AAPL", "symbol": "AAPL", "exchange": "NASDAQ", "market_cap": 800_000_000}
+        ]
+        mock_scan.return_value = BoScanBucket(counts={"5": 1, "4": 0, "3": 0}, count=1)
+
+        result = execute_bo_scan(use_screener=True, apply_gates=True)
+
+        assert result["_counts"]["5"] == 1
+        mock_scan.assert_called_once()
+        kwargs = mock_scan.call_args.kwargs
+        assert kwargs["universe_source"] == "snapshot"
+        assert kwargs["force_keys"] == set()
+        assert kwargs["force_rows"] == []
+
+
 class TestExecuteBoEnrichment:
     @patch("stock_analyze.pipeline.enrich_with_vcp_context")
     def test_execute_bo_enrichment(self, mock_enrich):

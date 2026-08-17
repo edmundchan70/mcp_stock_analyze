@@ -121,7 +121,7 @@ class BoScanBucket(BaseModel):
     """Agent 1 output: BO setup rating buckets."""
 
     as_of: datetime = Field(default_factory=datetime.utcnow)
-    universe_source: Literal["screener", "force", "hybrid"] = "screener"
+    universe_source: Literal["screener", "force", "hybrid", "snapshot"] = "screener"
     gates_applied: bool = True
     ratings: list[BoSetupRating] = Field(default_factory=list)
     five_star: list[BoSetupRating] = Field(default_factory=list)

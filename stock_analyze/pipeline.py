@@ -18,7 +18,13 @@ from dotenv import load_dotenv
 from stock_analyze.agents.catalyst import enrich_with_catalysts, load_stocks_from_input
 from stock_analyze.agents.enrichment import enrich_with_vcp_context, load_vcp_stocks_from_input
 from stock_analyze.agents.rating import rate_ep_catalysts
-from stock_analyze.data.polygon import resolve_force_symbol, to_ep_row
+from stock_analyze.data.polygon import (
+    fetch_market_snapshot,
+    prefilter_snapshot,
+    resolve_force_symbol,
+    resolve_market_caps,
+    to_ep_row,
+)
 from stock_analyze.data.symbols import SymbolKey
 from stock_analyze.models.catalyst import CatalystBucket
 from stock_analyze.models.bo import BoEnrichedBucket, BoRatedBucket, BoRatedStock, BoScanBucket
@@ -88,7 +94,7 @@ class RunConfig:
     analysis_method: Optional[AnalysisMethod] = "ep_rating"
     limit: int = 300
     force_keys: Optional[list[SymbolKey]] = None
-    use_screener: bool = False   # always False post-migration
+    use_screener: bool = False   # True = market-wide snapshot sweep (BO only)
     apply_gates: bool = True
     output_root: Path = field(default_factory=lambda: Path("output"))
     min_rating: int = 4
@@ -167,7 +173,18 @@ def execute_ep_scan(
     """Run EP Agent 1 with paste-only Polygon symbols.
 
     Always attaches ``_counts`` (baseline/strict) for CLI logging.
+    ``use_screener=True`` runs the market-wide snapshot sweep (generalized
+    from BO; EP runs its normal gates over the snapshot universe).
     """
+    if use_screener:
+        return _execute_ep_sweep(
+            select=select,
+            limit=limit,
+            apply_gates=apply_gates,
+            on_stage=on_stage,
+            batch_progress=batch_progress,
+        )
+
     force_key_list: list[SymbolKey] = list(force_keys or [])
     if not force_key_list:
         raise ValueError("EP scan requires non-empty force_keys (paste-only)")
@@ -193,49 +210,7 @@ def execute_ep_scan(
             payload["_failed_force"] = failed_force
         return payload
 
-    # Build EP rows for each resolved symbol: combine ticker details + OHLCV-derived metrics
-    if on_stage is not None:
-        on_stage("computing EP metrics (Polygon OHLCV)")
-    if batch_progress is not None:
-        batch_progress.begin_ticker(len(resolved), "EP metrics", throttle=1)
-
-    ep_rows: list[dict[str, Any]] = []
-    for i, detail in enumerate(resolved, start=1):
-        symbol = detail.get("symbol", "")
-        if not symbol:
-            continue
-        try:
-            ohlcv_row = to_ep_row(symbol)
-            # Merge: ticker details win for name/exchange/market_cap; OHLCV for metrics
-            row = {
-                "name": detail.get("name", f"POLYGON:{symbol}"),
-                "symbol": symbol,
-                "exchange": detail.get("exchange", "NASDAQ"),
-                "close": ohlcv_row.get("close"),
-                "open": ohlcv_row.get("open"),
-                "prior_close": ohlcv_row.get("prior_close"),
-                "gap": ohlcv_row.get("gap"),
-                "volume": ohlcv_row.get("volume"),
-                "relative_volume_10d_calc": ohlcv_row.get("relative_volume_10d_calc"),
-                "Value.Traded": ohlcv_row.get("Value.Traded"),
-                "avg_dollar_volume_50d": ohlcv_row.get("avg_dollar_volume_50d"),
-                "market_cap_basic": detail.get("market_cap"),
-                "market_cap": detail.get("market_cap"),
-                "description": detail.get("description", ""),
-            }
-            ep_rows.append(row)
-        except Exception as exc:
-            logger.warning("EP row build failed for %s: %s", symbol, exc)
-            failed_force.append({
-                "symbol": symbol.upper(),
-                "exchange": detail.get("exchange", "NASDAQ"),
-                "errors": [str(exc)],
-            })
-        if batch_progress is not None:
-            batch_progress.ticker(i, len(resolved), symbol.upper(), "computing")
-
-    if batch_progress is not None:
-        batch_progress.end_ticker()
+    ep_rows, failed_force = _build_ep_rows(resolved, failed_force, batch_progress)
 
     if not ep_rows:
         payload = {
@@ -265,6 +240,108 @@ def execute_ep_scan(
     }
     if failed_force:
         payload["_failed_force"] = failed_force
+    return payload
+
+
+def _build_ep_rows(
+    resolved: Sequence[dict[str, Any]],
+    failed_force: list[dict[str, Any]],
+    batch_progress: Any = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build normalized EP rows from resolved ticker details + OHLCV metrics.
+
+    Ticker details win for name/exchange/market_cap; OHLCV provides metrics.
+    Unresolvable symbols are appended to ``failed_force``.
+    """
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(resolved), "EP metrics", throttle=1)
+
+    ep_rows: list[dict[str, Any]] = []
+    for i, detail in enumerate(resolved, start=1):
+        symbol = detail.get("symbol", "")
+        if not symbol:
+            continue
+        try:
+            ohlcv_row = to_ep_row(symbol)
+            row = {
+                "name": detail.get("name", f"POLYGON:{symbol}"),
+                "symbol": symbol,
+                "exchange": detail.get("exchange", "NASDAQ"),
+                "close": ohlcv_row.get("close"),
+                "open": ohlcv_row.get("open"),
+                "prior_close": ohlcv_row.get("prior_close"),
+                "gap": ohlcv_row.get("gap"),
+                "volume": ohlcv_row.get("volume"),
+                "relative_volume_10d_calc": ohlcv_row.get("relative_volume_10d_calc"),
+                "Value.Traded": ohlcv_row.get("Value.Traded"),
+                "avg_dollar_volume_50d": ohlcv_row.get("avg_dollar_volume_50d"),
+                "market_cap_basic": detail.get("market_cap"),
+                "market_cap": detail.get("market_cap"),
+                "description": detail.get("description", ""),
+            }
+            ep_rows.append(row)
+        except Exception as exc:
+            logger.warning("EP row build failed for %s: %s", symbol, exc)
+            failed_force.append({
+                "symbol": symbol.upper(),
+                "exchange": detail.get("exchange", "NASDAQ"),
+                "errors": [str(exc)],
+            })
+        if batch_progress is not None:
+            batch_progress.ticker(i, len(resolved), symbol.upper(), "computing")
+
+    if batch_progress is not None:
+        batch_progress.end_ticker()
+    return ep_rows, failed_force
+
+
+def _execute_ep_sweep(
+    *,
+    select: GateSelect,
+    limit: int,
+    apply_gates: bool,
+    on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
+) -> dict[str, Any]:
+    """EP Agent 1 over the full market universe (Polygon snapshot sweep)."""
+    if on_stage is not None:
+        on_stage("fetching market snapshot (Polygon)")
+    snapshot = fetch_market_snapshot()
+
+    if on_stage is not None:
+        on_stage("prefiltering snapshot")
+    prefiltered = prefilter_snapshot(snapshot)
+
+    if on_stage is not None:
+        on_stage(f"resolving market caps ({len(prefiltered)} symbols)")
+    resolved = resolve_market_caps([r["symbol"] for r in prefiltered])
+
+    if on_stage is not None:
+        on_stage(f"computing EP metrics ({len(resolved)} symbols)")
+
+    ep_rows, _ = _build_ep_rows(resolved, [], batch_progress)
+
+    if not ep_rows:
+        return {
+            "baseline": {"count": 0, "stocks": []},
+            "strict": {"count": 0, "stocks": []},
+            "_counts": {"baseline": 0, "strict": 0},
+        }
+
+    if on_stage is not None:
+        on_stage("running EP scan")
+    result = run_ep_scan(
+        rows=ep_rows,
+        as_of=date.today(),
+        force_keys=set(),
+        universe_source="snapshot",
+        apply_gates=apply_gates,
+    )
+    payload = result.model_dump_selected(select)
+    payload["_counts"] = {
+        "baseline": result.baseline.count,
+        "strict": result.strict.count,
+    }
     return payload
 
 
@@ -317,9 +394,19 @@ def execute_vcp_scan(
 ) -> dict[str, Any]:
     """Run VCP Agent 1 with paste-only Polygon symbols.
 
+    ``use_screener=True`` runs the market-wide snapshot sweep (VCP runs its
+    normal gates over the snapshot universe).
+
     Args:
         batch_progress: Optional RunProgress for live batch OHLCV ticker.
     """
+    if use_screener:
+        return _execute_vcp_sweep(
+            apply_gates=apply_gates,
+            on_stage=on_stage,
+            batch_progress=batch_progress,
+        )
+
     force_key_list: list[SymbolKey] = list(force_keys or [])
     if not force_key_list:
         raise ValueError("VCP scan requires non-empty force_keys (paste-only)")
@@ -367,6 +454,76 @@ def execute_vcp_scan(
     return payload
 
 
+def _execute_vcp_sweep(
+    *,
+    apply_gates: bool,
+    on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
+) -> dict[str, Any]:
+    """VCP Agent 1 over the full market universe (Polygon snapshot sweep)."""
+    if on_stage is not None:
+        on_stage("fetching market snapshot (Polygon)")
+    snapshot = fetch_market_snapshot()
+
+    if on_stage is not None:
+        on_stage("prefiltering snapshot")
+    prefiltered = prefilter_snapshot(snapshot)
+
+    if on_stage is not None:
+        on_stage(f"resolving market caps ({len(prefiltered)} symbols)")
+    resolved = resolve_market_caps([r["symbol"] for r in prefiltered])
+
+    if on_stage is not None:
+        on_stage(f"running VCP scan ({len(resolved)} symbols)")
+
+    bucket = run_vcp_scan(
+        screener_rows=resolved,
+        force_keys=set(),
+        force_rows=[],
+        universe_source="snapshot",
+        apply_gates=apply_gates,
+        batch_progress=batch_progress,
+    )
+    payload = bucket.model_dump(mode="json")
+    payload["_counts"] = bucket.counts
+    return payload
+
+
+def _execute_bo_sweep(
+    *,
+    apply_gates: bool,
+    on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
+) -> dict[str, Any]:
+    """BO Agent 1 on the full market universe (Polygon snapshot sweep)."""
+    if on_stage is not None:
+        on_stage("fetching market snapshot (Polygon)")
+    snapshot = fetch_market_snapshot()
+
+    if on_stage is not None:
+        on_stage("prefiltering snapshot")
+    prefiltered = prefilter_snapshot(snapshot)
+
+    if on_stage is not None:
+        on_stage(f"resolving market caps ({len(prefiltered)} symbols)")
+    resolved = resolve_market_caps([r["symbol"] for r in prefiltered])
+
+    if on_stage is not None:
+        on_stage(f"running BO scan ({len(resolved)} symbols)")
+
+    bucket = run_bo_scan(
+        screener_rows=resolved,
+        force_keys=set(),
+        force_rows=[],
+        universe_source="snapshot",
+        apply_gates=apply_gates,
+        batch_progress=batch_progress,
+    )
+    payload = bucket.model_dump(mode="json")
+    payload["_counts"] = bucket.counts
+    return payload
+
+
 def execute_bo_scan(
     *,
     force_keys: Optional[Sequence[SymbolKey]] = None,
@@ -376,11 +533,21 @@ def execute_bo_scan(
     on_stage: Optional[StageFn] = None,
     batch_progress: Any = None,
 ) -> dict[str, Any]:
-    """Run Qullamaggie BO Agent 1 with paste-only Polygon symbols.
+    """Run Qullamaggie BO Agent 1.
+
+    ``use_screener=True`` discovers the universe from the Polygon market
+    snapshot (prefilter → market-cap gate) instead of a pasted symbol list.
 
     Args:
         batch_progress: Optional RunProgress for live batch OHLCV ticker.
     """
+    if use_screener:
+        return _execute_bo_sweep(
+            apply_gates=apply_gates,
+            on_stage=on_stage,
+            batch_progress=batch_progress,
+        )
+
     force_key_list: list[SymbolKey] = list(force_keys or [])
     if not force_key_list:
         raise ValueError("BO scan requires non-empty force_keys (paste-only)")
@@ -428,6 +595,108 @@ def execute_bo_scan(
     return payload
 
 
+def _as_structural_model(stock: Any) -> Any:
+    """Coerce a raw dict/pydantic row into a structural rating model."""
+    if isinstance(stock, dict):
+        from stock_analyze.models.vcp import VcpStructuralRating
+
+        return VcpStructuralRating(**stock)
+    return stock
+
+
+def _as_bo_setup_model(stock: Any) -> Any:
+    """Coerce a raw dict/pydantic row into a BO setup rating model."""
+    if isinstance(stock, dict):
+        from stock_analyze.models.bo import BoSetupRating
+
+        return BoSetupRating(**stock)
+    return stock
+
+
+def _blank_context(symbol: str, exchange: str) -> Any:
+    """A neutral Agent-2 context so Agent-3 can run without enrichment."""
+    from stock_analyze.models.vcp import VcpContextEnrichment
+
+    return VcpContextEnrichment(symbol=symbol, exchange=exchange)
+
+
+def report_vcp(
+    stocks: Sequence[Any],
+    contexts: Optional[Sequence[Optional[Any]]] = None,
+) -> list[VcpRatedStock]:
+    """Agent-3 loop for VCP: build rated stocks from structural + context (T19).
+
+    ``contexts`` aligns 1:1 with ``stocks`` (the Agent-2 output). A missing
+    context (or no contexts at all) rates the row without enrichment:
+    ``cap_applied=False``, ``cap_reason="no_enrichment"``. Down-only caps +
+    sort live here so the walker's Report component and the legacy fused path
+    share one implementation.
+    """
+    if contexts is None:
+        contexts = [None] * len(stocks)
+
+    rated: list[VcpRatedStock] = []
+    for stock, context in zip(stocks, contexts):
+        structural_model = _as_structural_model(stock)
+        no_enrichment = context is None
+        if no_enrichment:
+            context = _blank_context(structural_model.symbol, structural_model.exchange)
+        rated_stock = build_rated_stock(structural_model, context)
+        if no_enrichment:
+            from stock_analyze.models.vcp import STRUCTURAL_LABELS
+
+            base = structural_model.structural_rating
+            rated_stock = rated_stock.model_copy(
+                update={
+                    "final_rating": base,
+                    "final_label": STRUCTURAL_LABELS.get(base, "sub_standard"),
+                    "cap_applied": False,
+                    "cap_reason": "no_enrichment",
+                }
+            )
+        rated.append(rated_stock)
+
+    rated.sort(key=lambda r: (-r.final_rating, r.symbol))
+    return rated
+
+
+def report_bo(
+    stocks: Sequence[Any],
+    contexts: Optional[Sequence[Optional[Any]]] = None,
+) -> list[BoRatedStock]:
+    """Agent-3 loop for BO: build rated stocks from setup + context (T19).
+
+    Mirrors :func:`report_vcp` semantics: no context -> ``cap_applied=False``,
+    ``cap_reason="no_enrichment"``.
+    """
+    if contexts is None:
+        contexts = [None] * len(stocks)
+
+    rated: list[BoRatedStock] = []
+    for stock, context in zip(stocks, contexts):
+        setup_model = _as_bo_setup_model(stock)
+        no_enrichment = context is None
+        if no_enrichment:
+            context = _blank_context(setup_model.symbol, setup_model.exchange)
+        rated_stock = build_bo_rated_stock(setup_model, context)
+        if no_enrichment:
+            from stock_analyze.models.bo import BO_LABELS
+
+            base = setup_model.funnel_stars if setup_model.funnel_stars > 0 else setup_model.rating
+            rated_stock = rated_stock.model_copy(
+                update={
+                    "final_rating": base,
+                    "final_label": BO_LABELS.get(base, "sub_standard"),
+                    "cap_applied": False,
+                    "cap_reason": "no_enrichment",
+                }
+            )
+        rated.append(rated_stock)
+
+    rated.sort(key=lambda r: (-r.final_rating, r.symbol))
+    return rated
+
+
 def execute_vcp_enrichment(
     stocks: Sequence[Any],
     *,
@@ -441,18 +710,7 @@ def execute_vcp_enrichment(
         count=len(enriched), stocks=enriched,
     ).model_dump(mode="json")
 
-    rated: list[VcpRatedStock] = []
-    for structural, context in zip(stocks, enriched):
-        if isinstance(structural, dict):
-            from stock_analyze.models.vcp import VcpStructuralRating
-            structural_model = VcpStructuralRating(**structural)
-        else:
-            structural_model = structural
-        rated_stock = build_rated_stock(structural_model, context)
-        rated.append(rated_stock)
-
-    rated.sort(key=lambda r: (-r.final_rating, r.symbol))
-
+    rated = report_vcp(stocks, enriched)
     rated_payload = VcpRatedBucket(
         count=len(rated), stocks=rated,
     ).model_dump(mode="json")
@@ -491,18 +749,7 @@ def execute_bo_enrichment(
         count=len(enriched), stocks=enriched,
     ).model_dump(mode="json")
 
-    rated: list[BoRatedStock] = []
-    for setup, context in zip(stocks, enriched):
-        if isinstance(setup, dict):
-            from stock_analyze.models.bo import BoSetupRating
-            setup_model = BoSetupRating(**setup)
-        else:
-            setup_model = setup
-        rated_stock = build_bo_rated_stock(setup_model, context)
-        rated.append(rated_stock)
-
-    rated.sort(key=lambda r: (-r.final_rating, r.symbol))
-
+    rated = report_bo(stocks, enriched)
     rated_payload = BoRatedBucket(
         count=len(rated), stocks=rated,
     ).model_dump(mode="json")
@@ -560,7 +807,7 @@ def _run_daily_vcp(
         agent1_raw = execute_vcp_scan(
             force_keys=force_keys or None,
             limit=config.limit,
-            use_screener=False,
+            use_screener=config.use_screener,
             apply_gates=config.apply_gates,
             on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
             batch_progress=reporter,
@@ -694,7 +941,7 @@ def _run_daily_bo(
         agent1_raw = execute_bo_scan(
             force_keys=force_keys or None,
             limit=config.limit,
-            use_screener=False,
+            use_screener=config.use_screener,
             apply_gates=config.apply_gates,
             on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
             batch_progress=reporter,
@@ -839,8 +1086,8 @@ def run_daily(
     try:
         name = sanitize_run_name(config.name)
         force_keys = list(config.force_keys or [])
-        if not force_keys:
-            raise ValueError("Paste-only pipeline requires non-empty force_keys")
+        if not force_keys and not config.use_screener:
+            raise ValueError("Pipeline requires non-empty force_keys (or use_screener)")
         stamped = RunConfig(
             name=name,
             select=config.select,
@@ -848,7 +1095,7 @@ def run_daily(
             analysis_method=config.analysis_method,
             limit=config.limit,
             force_keys=force_keys or None,
-            use_screener=False,
+            use_screener=config.use_screener,
             apply_gates=config.apply_gates,
             output_root=config.output_root,
             min_rating=config.min_rating,
@@ -869,7 +1116,7 @@ def run_daily(
         "select": config.select,
         "run_catalyst": config.run_catalyst,
         "analysis_method": config.analysis_method,
-        "use_screener": False,
+        "use_screener": config.use_screener,
         "apply_gates": config.apply_gates,
         "force_include_count": len(force_keys),
         "started_at": started,
@@ -914,7 +1161,7 @@ def run_daily(
                 force_keys=force_keys or None,
                 select=config.select,
                 limit=config.limit,
-                use_screener=False,
+                use_screener=config.use_screener,
                 apply_gates=config.apply_gates,
                 on_stage=lambda text: reporter.stage(f"Agent 1 — {text}"),
                 batch_progress=reporter,

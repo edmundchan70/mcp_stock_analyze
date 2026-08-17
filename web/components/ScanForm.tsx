@@ -7,6 +7,7 @@ export interface ScanFormValues {
   name: string;
   pipeline_type: PipelineType;
   force_symbols: string;
+  use_screener: boolean;
   select: string;
   run_catalyst: boolean;
   apply_gates: boolean;
@@ -29,15 +30,18 @@ export function ScanForm({ onSubmit, submitting }: { onSubmit: (v: ScanFormValue
   const [name, setName] = useState("scan");
   const [pipelineType, setPipelineType] = useState<PipelineType>("daily_bo_scan");
   const [forceSymbols, setForceSymbols] = useState("");
+  const [universe, setUniverse] = useState<"paste" | "sweep">("paste");
   const [select, setSelect] = useState("strict");
   const [runCatalyst, setRunCatalyst] = useState(true);
   const [applyGates, setApplyGates] = useState(true);
   const [boProfile, setBoProfile] = useState("best");
   const [error, setError] = useState<string | null>(null);
 
+  const isSweep = pipelineType === "daily_bo_scan" && universe === "sweep";
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!forceSymbols.trim()) {
+    if (!isSweep && !forceSymbols.trim()) {
       setError("Paste at least one ticker.");
       return;
     }
@@ -45,7 +49,8 @@ export function ScanForm({ onSubmit, submitting }: { onSubmit: (v: ScanFormValue
     onSubmit({
       name,
       pipeline_type: pipelineType,
-      force_symbols: forceSymbols,
+      force_symbols: isSweep ? "" : forceSymbols,
+      use_screener: isSweep,
       select,
       run_catalyst: runCatalyst,
       apply_gates: applyGates,
@@ -80,16 +85,33 @@ export function ScanForm({ onSubmit, submitting }: { onSubmit: (v: ScanFormValue
         <input id="name" className={field} value={name} onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <div>
-        <label className={label} htmlFor="symbols">Symbols (paste list)</label>
-        <textarea
-          id="symbols"
-          className={`${field} min-h-[96px] font-mono`}
-          placeholder="AAPL, MSFT, TSLA"
-          value={forceSymbols}
-          onChange={(e) => setForceSymbols(e.target.value)}
-        />
-      </div>
+      {pipelineType === "daily_bo_scan" && (
+        <div>
+          <label className={label} htmlFor="universe">Universe</label>
+          <select
+            id="universe"
+            className={field}
+            value={universe}
+            onChange={(e) => setUniverse(e.target.value as "paste" | "sweep")}
+          >
+            <option value="paste">Paste symbols</option>
+            <option value="sweep">Full market sweep</option>
+          </select>
+        </div>
+      )}
+
+      {!isSweep && (
+        <div>
+          <label className={label} htmlFor="symbols">Symbols (paste list)</label>
+          <textarea
+            id="symbols"
+            className={`${field} min-h-[96px] font-mono`}
+            placeholder="AAPL, MSFT, TSLA"
+            value={forceSymbols}
+            onChange={(e) => setForceSymbols(e.target.value)}
+          />
+        </div>
+      )}
 
       {pipelineType === "daily_ep_scan" && (
         <div className="grid grid-cols-2 gap-4">

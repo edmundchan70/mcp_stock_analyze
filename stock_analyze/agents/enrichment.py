@@ -256,6 +256,7 @@ def enrich_with_vcp_context(
     parse_context: Optional[ParseContextFn] = None,
     on_ticker: Optional[TickerFn] = None,
     max_concurrent: int = 5,
+    checkpoint: Optional[Callable[[], None]] = None,
 ) -> list[VcpContextEnrichment]:
     """Enrich VCP structural ratings with context via Tavily dual-query.
 
@@ -272,6 +273,8 @@ def enrich_with_vcp_context(
         parse_context: Mockable context parser function.
         on_ticker: Progress callback: (index, total, symbol, action).
         max_concurrent: Max concurrent stocks (Tavily rate limit).
+        checkpoint: Optional blocking callable called at each symbol boundary
+            (pauses + raises RunCancelled when cancelled).
 
     Returns:
         List of VcpContextEnrichment (soft-fail entries have error field set).
@@ -294,6 +297,11 @@ def enrich_with_vcp_context(
         stock: Union[VcpStructuralRating, dict[str, Any]],
     ) -> VcpContextEnrichment:
         async with sem:
+            # Drain-then-freeze: block new symbols while paused (in-flight
+            # Tavily/LLM calls finish first); raises RunCancelled when cancelled.
+            if checkpoint is not None:
+                await asyncio.to_thread(checkpoint)
+
             if isinstance(stock, dict):
                 symbol = str(stock.get("symbol") or "").upper()
                 exchange = str(stock.get("exchange") or "NASDAQ").upper()
