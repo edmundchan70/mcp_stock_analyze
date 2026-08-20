@@ -328,7 +328,7 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 | **Market Margin** | `margin_pct` = stock today% − benchmark today% (both vs prior close). Realtime gate + rank key. |
 | **Weak-Day Relative Strength** | `rs_20d` = (stock 20d return %) − (benchmark 20d return %) using close[-1] vs close[-21]. Daily gate + rank key. |
 | **52-Week High Proximity** | `pct_from_high` = (close / 252d high − 1) × 100, negative below the high. Daily gate (`≥ −max_high_dist_pct`). |
-| **Consecutive-Day Streak** | zhao daily survivor count of consecutive trading dates ending today (`streak = prior + 1`); displayed as 1 / 2 / 3+ (`streak_class`). Same-day re-runs never inflate. |
+| **Consecutive-Day Streak** | zhao daily survivor count of consecutive trading dates ending today (`streak = prior + 1`); displayed as 1 / 2 / 3+ (`streakLabel`, `web/lib/flow.ts`). Same-day re-runs never inflate. |
 | **scan_signals** | DB table (`schema.sql`): one row per `(symbol, scan_family, scan_variant, signal_date)` a symbol survived a scan. `Repo.record_scan_signals` (idempotent upsert) + `Repo.get_scan_streaks` (strictly prior dates). Wired in `server/app/jobs.py` via `node_overrides["__streaks__"]` (zhao daily only). |
 | **SIC Sector** | Polygon Ticker Details `sic_description` — the sector string attached to scanner rows (zhao `sector`, premarket `sector`) for sector grouping. No other sector source. |
 | **Premarket grep** | `premarket` family, single Polygon snapshot call at run time (~9:00–9:15 ET). Filter `change_pct ≥ premarket_min_change_pct` (default 5.0), sort desc, cap to `premarket_cap` (default 300), plus pasted symbols. No AI Search. |

@@ -14,17 +14,6 @@ ZHAO_VARIANT = Literal["realtime", "daily"]
 BENCHMARK = Literal["SPY", "QQQ"]
 
 
-class ZhaoGateThresholds(BaseModel):
-    """Editable zhao thresholds (mirror the Scanner ``zhao_*`` vars)."""
-
-    variant: ZHAO_VARIANT = "realtime"
-    benchmark: BENCHMARK = "SPY"
-    sma20_buffer_pct: float = Field(default=0.0, description="Min close % above SMA20 to keep")
-    min_margin_pct: float = Field(default=1.0, description="Realtime: min stock-benchmark margin %")
-    min_rs_pct: float = Field(default=0.0, description="Daily: min 20d relative strength vs benchmark")
-    max_high_dist_pct: float = Field(default=15.0, description="Daily: max % below the 252d high")
-
-
 class ZhaoStock(BaseModel):
     """One zhao survivor row (carries every Scanner results column)."""
 
@@ -60,4 +49,4 @@ class ZhaoScanBucket(BaseModel):
     counts: dict[str, int] = Field(default_factory=lambda: {"5": 0, "4": 0, "3": 0, "2": 0})
 
 
-__all__ = ["BENCHMARK", "ZHAO_VARIANT", "ZhaoGateThresholds", "ZhaoScanBucket", "ZhaoStock"]
+__all__ = ["BENCHMARK", "ZHAO_VARIANT", "ZhaoScanBucket", "ZhaoStock"]

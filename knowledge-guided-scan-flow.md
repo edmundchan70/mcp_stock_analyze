@@ -49,7 +49,7 @@ Run model: scan run = Universe→Scanner graph (node:sc_1 artifact → output_ro
 
 ### Backend surface
 
-- `stock_analyze/scanners/zhao/metrics.py` — pure math: `sma20`, `pct_change`, `rel_strength_20d`, `pct_from_high`, `strength_tier_realtime` (5≥3.0 / 4≥1.5 / 3>0 / 2), `strength_tier_daily` (RS+52w composite), `streak_class` (1/2/3+).
+- `stock_analyze/scanners/zhao/metrics.py` — pure math: `sma20`, `pct_change`, `rel_strength_20d`, `pct_from_high`, `strength_tier_realtime` (5≥3.0 / 4≥1.5 / 3>0 / 2), `strength_tier_daily` (RS+52w composite). The 1/2/3+ streak label lives in the frontend (`streakLabel`, `web/lib/flow.ts`).
 - `stock_analyze/scanners/zhao/runner.py:run_zhao_scan` — paste-first; batch OHLCV + benchmark OHLCV; gates per variant (`close>SMA20` always, realtime adds `margin≥min`, daily adds `rs≥min` + `pct_from_high≥-max`); daily ranks by RS desc; `streak = prior + 1` from the `streaks` map.
 - `stock_analyze/scanners/premarket/runner.py:run_premarket_scan` — one snapshot call → `change_pct ≥ min` filter → sort desc → cap → tier; pasted symbols bypass the change gate (`force_set`); `select_premarket_candidates` bounds detail/ADV work.
 - `stock_analyze/pipeline.py:execute_zhao_scan` / `execute_premarket_scan` — resolve force keys, orchestrate OHLCV / snapshot + `resolve_batch_details` (name/sector via `sic_description`) + optional 20d ADV for the volume flag.

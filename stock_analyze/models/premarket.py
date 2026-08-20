@@ -10,14 +10,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class PremarketGateThresholds(BaseModel):
-    """Editable premarket thresholds (mirror the Scanner ``premarket_*`` vars)."""
-
-    min_change_pct: float = Field(default=5.0, description="Min premarket change % vs prior close")
-    min_vol_mult: float = Field(default=0.0, description="Min volume × 20d ADV (0 = flag off)")
-    cap: int = Field(default=300, description="Max survivors kept from the sweep")
-
-
 class PremarketStock(BaseModel):
     """One premarket survivor row."""
 
@@ -46,4 +38,4 @@ class PremarketScanBucket(BaseModel):
     counts: dict[str, int] = Field(default_factory=lambda: {"5": 0, "4": 0, "3": 0, "2": 0})
 
 
-__all__ = ["PremarketGateThresholds", "PremarketScanBucket", "PremarketStock"]
+__all__ = ["PremarketScanBucket", "PremarketStock"]
