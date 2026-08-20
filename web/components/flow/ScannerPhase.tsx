@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRun, getRun, listTools } from "@/lib/api";
 import { defaultsFor, scannerGroups, visibleVars } from "@/lib/graph";
-import { fmtCompact } from "@/lib/format";
+import { fmtCompact, fmtPct } from "@/lib/format";
 import {
   FAMILY_HAS_SEARCH,
   FAMILY_LABELS,
@@ -12,6 +12,7 @@ import {
   rowRating,
   scanRunBody,
   scannerRowsFromArtifacts,
+  streakLabel,
   type Family,
   type FlowAction,
   type FlowState,
@@ -270,6 +271,23 @@ export function ScannerPhase({
   const universeReady = state.universeSource === "snapshot" || parseSymbolText(state.universeText).length > 0;
   const sortLabel = columns.find((c) => c.key === sortKey)?.label;
 
+  // Zhao realtime: benchmark context banner — informational only, never blocks.
+  const zhaoBanner =
+    state.family === "zhao" &&
+    String(state.scannerVars["zhao_variant"] ?? "realtime") === "realtime" &&
+    state.scanRows.length > 0
+      ? (() => {
+          const first = state.scanRows[0];
+          const aboveSma = state.scanRows.filter((r) => Number(r.close ?? 0) > Number(r.sma20 ?? 0)).length;
+          return {
+            benchSymbol: String(first.bench_symbol ?? "SPY"),
+            benchPct: Number(first.bench_pct ?? 0),
+            aboveSma,
+            total: state.scanRows.length,
+          };
+        })()
+      : null;
+
   return (
     <div className="grid min-h-0 gap-6 lg:grid-cols-[300px_1fr]">
       {/* Left filter rail */}
@@ -425,6 +443,15 @@ export function ScannerPhase({
               {FAMILY_LABELS[state.family]} detection
             </p>
           </div>
+          {zhaoBanner && (
+            <div
+              className="rounded-md border border-accent-600/30 bg-accent-600/10 px-3 py-1.5 text-xs text-slate-300"
+              title="Benchmark context — informational only, never a market-regime block."
+            >
+              {zhaoBanner.benchSymbol} today {fmtPct(zhaoBanner.benchPct)} · {zhaoBanner.aboveSma}/
+              {zhaoBanner.total} survivors hold above SMA20
+            </div>
+          )}
           <button
             type="button"
             className="btn-primary px-4 py-1.5 text-sm"
@@ -528,6 +555,8 @@ export function ScannerPhase({
                               <span>{String(r[c.key] ?? "—")}</span>
                             ) : c.key === "features_held" ? (
                               <SetupCell features={r} />
+                            ) : state.family === "zhao" && c.key === "streak" ? (
+                              <span>{streakLabel(r[c.key])}</span>
                             ) : (
                               fmtCell(r[c.key], c)
                             )}

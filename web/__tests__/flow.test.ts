@@ -17,6 +17,7 @@ import {
   scannerRowsFromArtifacts,
   scanRunBody,
   searchRunBody,
+  streakLabel,
   type FlowState,
 } from "@/lib/flow";
 
@@ -286,7 +287,15 @@ describe("zhao + premarket families", () => {
     });
     expect(lines[2]).toContain("20d RS 12.5%");
     expect(lines[2]).toContain("52w -3%");
-    expect(lines[2]).toContain("streak 3");
+    expect(lines[2]).toContain("streak 3+");
+  });
+
+  it("labels streaks as 1 / 2 / 3+", () => {
+    expect(streakLabel(0)).toBe("—");
+    expect(streakLabel(1)).toBe("1");
+    expect(streakLabel(2)).toBe("2");
+    expect(streakLabel(3)).toBe("3+");
+    expect(streakLabel(10)).toBe("3+");
   });
 
   it("explains premarket rows with change % + volume flag", () => {
@@ -304,8 +313,11 @@ describe("zhao + premarket families", () => {
     expect(lines[2]).toContain("Technology");
   });
 
-  it("overlays SMA20 for zhao charts", () => {
+  it("overlays SMA20 + last-bar marker for zhao charts", () => {
     const overlay = patternOverlay("zhao", { sma20: 25.5 }, [{ datetime: "2026-08-12" }]);
     expect(overlay.priceLines).toEqual([{ price: 25.5, title: "SMA20", color: "#e0a33c" }]);
+    expect(overlay.markers).toEqual([
+      { time: "2026-08-12", position: "belowBar", color: "#e0a33c", shape: "circle", text: "today" },
+    ]);
   });
 });

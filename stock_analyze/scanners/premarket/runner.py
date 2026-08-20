@@ -49,9 +49,10 @@ def run_premarket_scan(
     Each input row carries ``symbol``/``exchange`` plus optional ``change_pct``,
     ``price``, ``volume``, ``name``, ``sector`` and ``adv_20d`` (20-day average
     dollar volume). Keep rule: ``change_pct >= min_change_pct``, sorted by
-    change_pct desc, capped to ``cap`` survivors. Rows whose (symbol, exchange)
-    is in ``force_set`` bypass the change gate (user-pasted). ``apply_gates=False``
-    keeps every row (cap still applied).
+    change_pct desc. The cap applies to the sweep survivors only; rows whose
+    (symbol, exchange) is in ``force_set`` bypass the change gate and are never
+    capped out (user-pasted). ``apply_gates=False`` keeps every non-forced row
+    (cap still applied).
 
     The ``volume_flag`` is ``volume >= min_vol_mult × adv_20d``; when
     ``min_vol_mult <= 0`` every survivor's flag is False (feature off).
@@ -59,7 +60,8 @@ def run_premarket_scan(
     day = as_of or datetime.now(timezone.utc).date()
     force = force_set or set()
 
-    stocks: list[PremarketStock] = []
+    forced_stocks: list[PremarketStock] = []
+    sweep_stocks: list[PremarketStock] = []
     for row in rows:
         change_pct = row.get("change_pct")
         if change_pct is None:
@@ -71,24 +73,24 @@ def run_premarket_scan(
         forced = (symbol, exchange) in force or bool(row.get("force"))
         if apply_gates and not forced and float(change_pct) < min_change_pct:
             continue
-        stocks.append(
-            PremarketStock(
-                symbol=symbol,
-                exchange=exchange,
-                change_pct=float(change_pct),
-                price=float(row["price"]) if row.get("price") is not None else None,
-                volume=float(row["volume"]) if row.get("volume") is not None else None,
-                company_name=str(row.get("name") or ""),
-                sector=str(row.get("sector") or "Unknown"),
-                adv_20d=float(row["adv_20d"]) if row.get("adv_20d") is not None else None,
-                vol_flag=volume_flag(row.get("volume"), row.get("adv_20d"), min_vol_mult),
-                strength=strength_tier(float(change_pct)),
-                as_of=day,
-            )
+        stock = PremarketStock(
+            symbol=symbol,
+            exchange=exchange,
+            change_pct=float(change_pct),
+            price=float(row["price"]) if row.get("price") is not None else None,
+            volume=float(row["volume"]) if row.get("volume") is not None else None,
+            company_name=str(row.get("name") or ""),
+            sector=str(row.get("sector") or "Unknown"),
+            adv_20d=float(row["adv_20d"]) if row.get("adv_20d") is not None else None,
+            vol_flag=volume_flag(row.get("volume"), row.get("adv_20d"), min_vol_mult),
+            strength=strength_tier(float(change_pct)),
+            as_of=day,
         )
+        (forced_stocks if forced else sweep_stocks).append(stock)
 
+    sweep_stocks.sort(key=lambda s: s.change_pct, reverse=True)
+    stocks = [*sweep_stocks[:cap], *forced_stocks]
     stocks.sort(key=lambda s: s.change_pct, reverse=True)
-    stocks = stocks[:cap]
 
     counts = {str(t): sum(1 for s in stocks if s.strength == t) for t in (5, 4, 3, 2)}
     return PremarketScanBucket(

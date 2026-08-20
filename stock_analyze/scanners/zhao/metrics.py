@@ -70,23 +70,11 @@ def strength_tier_daily(rs_pct: float, pct_from_high: float) -> int:
     return 2
 
 
-def streak_class(days: int) -> str:
-    """Display label for a consecutive-day streak: 1 / 2 / 3+ / empty."""
-    if days <= 0:
-        return ""
-    if days == 1:
-        return "1"
-    if days == 2:
-        return "2"
-    return "3+"
-
-
 __all__ = [
     "pct_change",
     "pct_from_high",
     "rel_strength_20d",
     "sma20",
-    "streak_class",
     "strength_tier_daily",
     "strength_tier_realtime",
 ]

@@ -325,6 +325,14 @@ export function reportRowsFromArtifacts(artifacts: Record<string, unknown>): Rec
 
 // ── plain-language detection explanations ──────────────────────────
 
+/** Display label for a consecutive-day streak: 1 / 2 / 3+ / em-dash. */
+export function streakLabel(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n >= 3) return "3+";
+  return String(n);
+}
+
 /** Which detection checks passed/failed for a scanner row (per family). */
 export function rowExplanation(family: Family, row: Record<string, unknown>): string[] {
   if (family === "ep") {
@@ -371,7 +379,7 @@ export function rowExplanation(family: Family, row: Record<string, unknown>): st
       `today ${fmtPct(row.today_pct)} · bench ${fmtPct(row.bench_pct)} (${row.bench_symbol ?? "SPY"}) · margin ${fmtPct(row.margin_pct)}`,
     ];
     if (variant === "daily") {
-      lines.push(`20d RS ${fmtPct(row.rs_20d)} · 52w ${fmtPct(row.pct_from_high)} below high · streak ${row.streak ?? "—"}`);
+      lines.push(`20d RS ${fmtPct(row.rs_20d)} · 52w ${fmtPct(row.pct_from_high)} below high · streak ${streakLabel(row.streak)}`);
     }
     return lines;
   }
@@ -441,6 +449,16 @@ export function patternOverlay(family: Family, row: Record<string, unknown>, bar
   } else if (family === "zhao") {
     const sma = Number(row.sma20);
     if (sma > 0) priceLines.push({ price: sma, title: "SMA20", color: AMBER });
+    // Last bar = the day being scored (today for realtime, EOD for daily).
+    if (lastTime) {
+      markers.push({
+        time: lastTime,
+        position: "belowBar",
+        color: AMBER,
+        shape: "circle",
+        text: "today",
+      });
+    }
   }
   return { priceLines, markers };
 }

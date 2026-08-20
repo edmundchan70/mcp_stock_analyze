@@ -45,6 +45,7 @@ def run_zhao_scan(
     max_high_dist_pct: float = 15.0,
     n_bars: int = 300,
     streaks: Optional[Mapping[str, int]] = None,
+    snapshot_rows: Optional[Sequence[Mapping[str, Any]]] = None,
     batch_progress: Optional["RunProgress"] = None,
 ) -> ZhaoScanBucket:
     """Run the zhao scan over resolved force rows.
@@ -56,6 +57,9 @@ def run_zhao_scan(
     Keep rule per variant:
     - realtime: ``close > SMA20(1+buffer)`` AND ``margin_pct >= min_margin_pct``
       (margin = stock today% − benchmark today%), ranked by margin desc.
+      ``today%`` comes from the market snapshot (``todaysChangePerc``, includes
+      premarket) via ``snapshot_rows`` when supplied; otherwise the last daily
+      close-to-close move is used.
     - daily: ``close > SMA20(1+buffer)`` AND ``rs_20d >= min_rs_pct`` AND
       ``pct_from_high >= -max_high_dist_pct``, ranked by rs_20d desc.
 
@@ -65,6 +69,13 @@ def run_zhao_scan(
     """
     day = as_of or datetime.now(timezone.utc).date()
     streak_map = dict(streaks or {})
+    snapshot_pct: dict[str, float] = {}
+    if snapshot_rows:
+        for r in snapshot_rows:
+            pct = r.get("change_pct")
+            sym = str(r.get("symbol") or "").upper()
+            if sym and pct is not None:
+                snapshot_pct[sym] = float(pct)
 
     symbols_to_fetch: list[tuple[str, str]] = []
     for row in rows:
@@ -115,6 +126,7 @@ def run_zhao_scan(
             max_high_dist_pct=max_high_dist_pct,
             streak_prior=streak_map.get(symbol.upper(), 0),
             apply_gates=apply_gates,
+            snapshot_pct=snapshot_pct if variant == "realtime" else None,
         )
         if stock is not None:
             stocks.append(stock)
@@ -151,6 +163,7 @@ def _score_stock(
     max_high_dist_pct: float,
     streak_prior: int,
     apply_gates: bool,
+    snapshot_pct: Optional[Mapping[str, float]] = None,
 ) -> Optional[ZhaoStock]:
     """Compute metrics + gates + strength tier for one symbol; None when gated out."""
     symbol = str(row.get("symbol") or "").upper()
@@ -165,6 +178,13 @@ def _score_stock(
     bench_close = float(bench_df["close"].iloc[-1]) if len(bench_df) >= 2 else 0.0
     bench_prior = float(bench_df["close"].iloc[-2]) if len(bench_df) >= 2 else 0.0
     bench_pct = pct_change(bench_close, bench_prior)
+
+    if snapshot_pct:
+        # Realtime: prefer the snapshot's today's change % (includes premarket
+        # activity) for both the stock and the benchmark; fall back to the
+        # daily-bar close-to-close move when a symbol is missing from it.
+        today_pct = snapshot_pct.get(symbol, today_pct)
+        bench_pct = snapshot_pct.get(benchmark.upper(), bench_pct)
 
     margin_pct = today_pct - bench_pct
     rs_20d = rel_strength_20d(df["close"], bench_df["close"]) if len(bench_df) >= 21 else 0.0

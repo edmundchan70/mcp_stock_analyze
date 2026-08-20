@@ -108,3 +108,22 @@ def test_run_premarket_scan_force_rows_bypass_gate():
         force_set={("ZZZ", "NYSE")},
     )
     assert {s.symbol for s in bucket.ratings} == {"AAA", "ZZZ"}
+
+
+def test_run_premarket_scan_force_rows_survive_cap():
+    """Pasted symbols are never dropped by the survivor cap (regression: the
+    cap applies to the sweep only, force rows union in afterward)."""
+    rows = [
+        {"symbol": "AAA", "exchange": "NASDAQ", "change_pct": 11.0},
+        {"symbol": "BBB", "exchange": "NASDAQ", "change_pct": 6.0},
+        {"symbol": "ZZZ", "exchange": "NYSE", "change_pct": 1.0},
+    ]
+    bucket = run_premarket_scan(
+        rows, as_of=date(2026, 8, 8), apply_gates=True,
+        min_change_pct=5.0, min_vol_mult=0.0, cap=1,
+        force_set={("ZZZ", "NYSE")},
+    )
+    symbols = [s.symbol for s in bucket.ratings]
+    assert "ZZZ" in symbols  # pasted, never capped out
+    assert "AAA" in symbols  # top sweep survivor fills the cap slot
+    assert "BBB" not in symbols

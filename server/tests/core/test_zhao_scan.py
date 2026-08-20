@@ -9,7 +9,6 @@ from stock_analyze.scanners.zhao.metrics import (
     pct_from_high,
     rel_strength_20d,
     sma20,
-    streak_class,
     strength_tier_daily,
     strength_tier_realtime,
 )
@@ -72,14 +71,6 @@ def test_strength_tiers():
     assert strength_tier_daily(-5.0, -20.0) == 2
 
 
-def test_streak_class():
-    assert streak_class(0) == ""
-    assert streak_class(1) == "1"
-    assert streak_class(2) == "2"
-    assert streak_class(3) == "3+"
-    assert streak_class(10) == "3+"
-
-
 # ── runner: realtime ──────────────────────────────────────────────
 
 
@@ -136,6 +127,27 @@ def test_run_zhao_scan_realtime_apply_gates_false_keeps_all(monkeypatch):
     )
     assert [s.symbol for s in bucket.ratings] == ["DDD"]
     assert bucket.ratings[0].strength == 2
+
+
+def test_run_zhao_scan_realtime_uses_snapshot_today_pct(monkeypatch):
+    """Realtime today% comes from the market snapshot (todaysChangePerc, which
+    includes premarket), not the last daily close-to-close bar."""
+    _realtime_rows(monkeypatch)  # BBB's last bar is +3%; snapshot says +7%
+    rows = [{"symbol": "BBB", "exchange": "NASDAQ", "sic_description": "Software"}]
+    bucket = run_zhao_scan(
+        rows, variant="realtime", benchmark="SPY",
+        as_of=date(2026, 8, 8), apply_gates=True, min_margin_pct=1.0,
+        snapshot_rows=[
+            {"symbol": "BBB", "change_pct": 7.0},   # vs SPY +1.0 → margin 6.0
+            {"symbol": "SPY", "change_pct": 1.0},
+        ],
+    )
+    assert [s.symbol for s in bucket.ratings] == ["BBB"]
+    stock = bucket.ratings[0]
+    assert abs(stock.today_pct - 7.0) < 1e-9
+    assert abs(stock.bench_pct - 1.0) < 1e-9
+    assert abs(stock.margin_pct - 6.0) < 1e-9
+    assert stock.strength == 5   # margin 6.0 >= 3.0
 
 
 # ── runner: daily ─────────────────────────────────────────────────

@@ -696,6 +696,15 @@ def execute_zhao_scan(
     if on_stage is not None:
         on_stage(f"running zhao scan ({variant})")
 
+    # Realtime today% comes from the market snapshot (todaysChangePerc, which
+    # already includes premarket activity) — not the last daily close-to-close
+    # bar. Daily (EOD) uses the OHLCV bars only.
+    snapshot_rows: Optional[list[dict[str, Any]]] = None
+    if variant == "realtime":
+        if on_stage is not None:
+            on_stage("fetching market snapshot (Polygon)")
+        snapshot_rows = fetch_market_snapshot() or None
+
     bucket = run_zhao_scan(
         rows=resolved,
         variant=variant,
@@ -706,6 +715,7 @@ def execute_zhao_scan(
         min_rs_pct=min_rs_pct,
         max_high_dist_pct=max_high_dist_pct,
         streaks=streaks,
+        snapshot_rows=snapshot_rows,
         batch_progress=batch_progress,
     )
     payload = bucket.model_dump(mode="json")
@@ -765,20 +775,22 @@ def execute_premarket_scan(
     # Union pasted symbols that are not already survivors (force rows).
     force_set = {(s.upper(), e.upper()) for s, e in (force_keys or [])}
     survivor_symbols = {str(r["symbol"]).upper() for r in candidates}
+    snapshot_by_symbol = {str(r["symbol"]).upper(): r for r in snapshot}
     force_rows: list[dict[str, Any]] = []
     for symbol, exchange in force_set:
         if symbol in survivor_symbols:
             continue
         d = details.get(symbol) or resolve_batch_details([symbol]).get(symbol)
         if d is not None:
+            snap = snapshot_by_symbol.get(symbol, {})
             force_rows.append({
                 "symbol": symbol,
                 "exchange": exchange,
                 "name": d.get("name", ""),
                 "sector": d.get("sic_description") or "Unknown",
-                "change_pct": 0.0,  # force-included; bypasses the change gate
-                "price": None,
-                "volume": None,
+                "change_pct": snap.get("change_pct", 0.0),  # bypasses the change gate
+                "price": snap.get("price"),
+                "volume": snap.get("volume"),
                 "adv_20d": None,
                 "force": True,
             })
