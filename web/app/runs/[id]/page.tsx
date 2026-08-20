@@ -41,11 +41,11 @@ const INITIAL: RunProgressState = {
 };
 
 const NODE_TONE: Record<string, string> = {
-  running: "text-blue-300",
-  ok: "text-emerald-400",
-  error: "text-rose-400",
-  skipped: "text-slate-500",
-  cancelled: "text-rose-400",
+  running: "text-accent-400",
+  ok: "text-up-500",
+  error: "text-down-500",
+  skipped: "text-slate-600",
+  cancelled: "text-down-500",
 };
 
 function reduceProgress(prev: RunProgressState, e: RunEvent): RunProgressState {
@@ -163,38 +163,35 @@ export default function RunDetailPage() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
+    <main className="mx-auto max-w-5xl px-6 py-8">
       <header className="mb-6">
-        <Link href="/" className="text-sm text-slate-400 hover:text-slate-200">
+        <Link href="/" className="text-xs text-slate-500 hover:text-slate-300">
           ← Dashboard
         </Link>
         <div className="mt-2 flex items-baseline justify-between">
-          <h1 className="text-2xl font-bold">{run?.name ?? "Run"}</h1>
+          <h1 className="font-mono text-xl font-bold text-slate-100">{run?.name ?? "Run"}</h1>
           <div className="flex items-center gap-3">
             {run && (
-              <span className="text-sm text-slate-400">
-                {pipelineLabel} · {run.status}
+              <span className="text-xs text-slate-500">
+                {pipelineLabel} · <span className="font-mono">{run.status}</span>
               </span>
             )}
             {active && (
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => act(run!.paused ? "resume" : "pause")}
-                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+                  className="btn-ghost px-3 py-1.5 text-sm"
                 >
                   {run!.paused ? "Resume" : "Pause"}
                 </button>
-                <button
-                  onClick={() => act("cancel")}
-                  className="rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-500"
-                >
+                <button onClick={() => act("cancel")} className="btn-danger px-3 py-1.5 text-sm">
                   Cancel run
                 </button>
               </div>
             )}
           </div>
         </div>
-        {controlError && <p className="mt-2 text-xs text-rose-400">{controlError}</p>}
+        {controlError && <p className="mt-2 text-xs text-down-500">{controlError}</p>}
       </header>
 
       <div className="space-y-6">
@@ -202,12 +199,12 @@ export default function RunDetailPage() {
 
         {nodeEntries.length > 0 && (
           <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Nodes</h2>
-            <ul className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/50 p-4 font-mono text-xs">
+            <h2 className="mb-3 text-2xs font-semibold uppercase tracking-wider text-slate-500">Nodes</h2>
+            <ul className="panel space-y-1 p-4 font-mono text-xs">
               {nodeEntries.map(([nodeId, node]) => (
                 <li key={nodeId} className="flex items-center justify-between">
-                  <span className="text-slate-300">{nodeId}</span>
-                  <span className={NODE_TONE[node.status] ?? "text-slate-400"}>
+                  <span className="text-slate-400">{nodeId}</span>
+                  <span className={NODE_TONE[node.status] ?? "text-slate-500"}>
                     {node.status}
                     {typeof node.kept === "number" ? ` (${node.kept})` : ""}
                   </span>
@@ -220,17 +217,17 @@ export default function RunDetailPage() {
         {run?.artifacts && (
           <section>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Results</h2>
+              <h2 className="text-2xs font-semibold uppercase tracking-wider text-slate-500">Results</h2>
               <button
                 onClick={() => setShowRaw((v) => !v)}
-                className="text-xs text-cyan-300 hover:underline"
+                className="text-xs text-accent-400 hover:underline"
               >
                 {showRaw ? "Hide raw JSON" : "Show raw JSON"}
               </button>
             </div>
 
             {showRaw ? (
-              <pre className="overflow-auto rounded-lg border border-slate-800 bg-slate-900 p-4 text-xs text-slate-300">
+              <pre className="panel overflow-auto p-4 font-mono text-xs text-slate-400">
                 {JSON.stringify(run.artifacts, null, 2)}
               </pre>
             ) : run.artifacts.merge_table ? (

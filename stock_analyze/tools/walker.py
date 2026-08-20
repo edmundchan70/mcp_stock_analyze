@@ -233,6 +233,7 @@ def run_graph(
     on_node: Optional[Callable[[str, str, str, int, int], None]] = None,
     control: Optional[Any] = None,
     on_confirm: Optional[Callable[[str, int, int], None]] = None,
+    progress: Optional[Any] = None,
 ) -> GraphRunResult:
     """Execute a graph definition over ``universe_rows``.
 
@@ -241,6 +242,11 @@ def run_graph(
     SSE progress. ``control`` (a ``RunControl`` duck-type) enables runtime
     skip/pause/cancel + the AI Search confirmation gate; ``on_confirm(node_id,
     symbol_count, tavily_estimate)`` fires when the gate blocks.
+
+    ``progress`` is a ``RunProgress`` duck-type (or ``None``) streamed to node
+    callables via an injected ``__progress__`` param so per-symbol stages
+    (symbol resolution, batch OHLCV, scoring, enrichment) surface on SSE. It is
+    injected at execution time only and never persisted with ``params``.
     """
     tools = tools or REGISTRY
     errors = validate_graph(definition, tools=tools)
@@ -268,6 +274,8 @@ def run_graph(
                 params.update(node_overrides[nid])
             if control_id is not None:
                 params["__control_id__"] = control_id
+            if progress is not None:
+                params["__progress__"] = progress
 
             # Assemble per-port inputs (auto-merge at junctions).
             inputs: dict[str, list[dict[str, Any]]] = {}

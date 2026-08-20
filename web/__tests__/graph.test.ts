@@ -52,11 +52,11 @@ describe("defaultsFor", () => {
 
 describe("scannerGroups", () => {
   it("maps each family to its inspector groups", () => {
-    expect(scannerGroups("ep")).toEqual(["Family", "EP", "EP baseline", "EP strict"]);
+    expect(scannerGroups("ep")).toEqual(["Family", "EP", "EP baseline", "EP strict", "EP technical"]);
     expect(scannerGroups("vcp")).toEqual(["Family", "VCP"]);
     expect(scannerGroups("bo")).toEqual(["Family", "BO"]);
     expect(scannerGroups("custom")).toEqual(["Family", "Custom"]);
-    expect(scannerGroups("nope")).toEqual(["Family", "EP", "EP baseline", "EP strict"]);
+    expect(scannerGroups("nope")).toEqual(["Family", "EP", "EP baseline", "EP strict", "EP technical"]);
   });
 });
 

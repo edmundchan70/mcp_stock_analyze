@@ -13,7 +13,7 @@ import stock_analyze.agents.rating as rating_mod
 from stock_analyze.tools.builtins import _search_callable
 
 
-def _vcp_enrich(rows, checkpoint=None):
+def _vcp_enrich(rows, checkpoint=None, on_ticker=None):
     # Real enrich_with_vcp_context returns one context object per row.
     return [
         {"symbol": r["symbol"], "exchange": r.get("exchange", "NASDAQ"), "sector": "Tech"}
@@ -21,11 +21,11 @@ def _vcp_enrich(rows, checkpoint=None):
     ]
 
 
-def _catalyst_enrich(rows, checkpoint=None):
+def _catalyst_enrich(rows, checkpoint=None, on_ticker=None):
     return [dict(r) for r in rows]
 
 
-def _ep_rate(rows, checkpoint=None):
+def _ep_rate(rows, checkpoint=None, on_ticker=None):
     return [{**r, "ep_rating": 4, "catalyst_type": "EARNINGS"} for r in rows]
 
 

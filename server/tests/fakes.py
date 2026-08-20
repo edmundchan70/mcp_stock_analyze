@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date as _date, timedelta
 from typing import Any, Optional
 
 
@@ -13,6 +14,7 @@ class FakeRepo:
         self.artifacts: dict[str, dict[str, Any]] = {}
         self.definitions: dict[str, dict[str, Any]] = {}
         self.component_templates: dict[str, dict[str, Any]] = {}
+        self.signals: list[dict[str, Any]] = []
 
     async def create_run(
         self,
@@ -147,3 +149,56 @@ class FakeRepo:
 
     async def delete_component_template(self, template_id: str) -> bool:
         return self.component_templates.pop(template_id, None) is not None
+
+    # ── scan_signals (zhao daily streak) ─────────────────────────────
+
+    async def record_scan_signals(
+        self,
+        symbols: list[str],
+        scan_family: str,
+        scan_variant: str,
+        *,
+        signal_date: Optional[str] = None,
+    ) -> int:
+        day = signal_date or "2026-08-20"
+        written = 0
+        for symbol in symbols:
+            key = (symbol.upper(), scan_family, scan_variant, day)
+            if not any(
+                (s["symbol"], s["scan_family"], s["scan_variant"], s["signal_date"]) == key
+                for s in self.signals
+            ):
+                self.signals.append(
+                    {"symbol": symbol.upper(), "scan_family": scan_family,
+                     "scan_variant": scan_variant, "signal_date": day}
+                )
+                written += 1
+        return written
+
+    async def get_scan_streaks(
+        self,
+        symbols: list[str],
+        scan_family: str,
+        scan_variant: str,
+        *,
+        as_of: Optional[str] = None,
+    ) -> dict[str, int]:
+        day = _date.fromisoformat(as_of or "2026-08-20")
+        streaks: dict[str, int] = {}
+        for sym in symbols:
+            dates = {
+                _date.fromisoformat(s["signal_date"])
+                for s in self.signals
+                if s["symbol"] == sym.upper()
+                and s["scan_family"] == scan_family
+                and s["scan_variant"] == scan_variant
+                and _date.fromisoformat(s["signal_date"]) < day
+            }
+            streak = 0
+            expected = day - timedelta(days=1)
+            while expected in dates:
+                streak += 1
+                expected -= timedelta(days=1)
+            if streak:
+                streaks[sym.upper()] = streak
+        return streaks

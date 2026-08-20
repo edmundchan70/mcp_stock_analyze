@@ -6,6 +6,35 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class EpSetupFeatures(BaseModel):
+    """Pure-math EP technical setup snapshot (``score_ep_setup`` output).
+
+    Event-day shock → post-event base / pullback / EMA / VWAP support
+    features. ``features_held`` counts enabled features that hold.
+    """
+
+    symbol: str = ""
+    exchange: str = ""
+    event_idx: Optional[int] = Field(
+        default=None, description="0-based index of the event day (highest-volume bar in last 63)"
+    )
+    base_detected: bool = False
+    volume_spike: bool = False
+    pullback_contrast: bool = False
+    ema_support: bool = False
+    vwap_support: bool = False
+    features_held: int = 0
+
+    # Measured values (reported alongside the booleans)
+    event_volume_ratio: float = Field(default=0.0, description="Event volume / 50d avg volume")
+    pullback_vol_ratio: float = Field(default=0.0, description="Pullback avg volume / event volume")
+    ema_stack_aligned: bool = Field(default=False, description="close > EMA9 > EMA20 > EMA50")
+    vwap_anchor: Literal["event", "pivot", "none"] = Field(
+        default="none", description="Which anchor's VWAP showed support"
+    )
+    as_of: date = Field(default_factory=date.today)
+
+
 class EpStock(BaseModel):
     """One symbol's metrics for Baseline / Strict evaluation."""
 
@@ -19,6 +48,22 @@ class EpStock(BaseModel):
     event_dollar_volume: Optional[float] = None
     force_included: bool = False
     as_of: date
+
+    # EP technical setup features (flattened from EpSetupFeatures when the
+    # feature test is active; all False otherwise)
+    event_idx: Optional[int] = None
+    base_detected: bool = False
+    volume_spike: bool = False
+    pullback_contrast: bool = False
+    ema_support: bool = False
+    vwap_support: bool = False
+    features_held: int = 0
+    ep_keep: bool = Field(default=False, description="Kept by the EP technical test (feature mode)")
+
+    # Informational gate outcomes — always evaluated, but in feature mode they
+    # never filter (kept list = feature survivors only)
+    passes_baseline: bool = Field(default=False, description="Would pass the Baseline gate")
+    passes_strict: bool = Field(default=False, description="Would pass the Strict gate")
 
 
 class GateThresholds(BaseModel):

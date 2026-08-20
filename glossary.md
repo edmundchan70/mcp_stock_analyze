@@ -30,18 +30,20 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 | **OHLCV Fallback** | When a force-include symbol needs metrics, gap % and RVOL10 are computed from 300 daily OHLCV bars via Polygon.io (`polygon.py`). |
 | **EnrichResult** | `EnrichResult` dataclass (`tradingview.py:24`): symbol, exchange, row (dict if successful), errors. `.ok` property is `True` when row is populated. |
 | **Exchange Fallback** | When primary exchange OHLCV enrichment fails, retry on NASDAQ → NYSE → AMEX → BATS → CBOE (1 attempt each). Socket is closed between exchanges to prevent stale-socket timeouts. (`tradingview.py:146`, `symbols.py:10`) |
-| **Trade Opportunity Auto-Detect** | **v2 (deferred):** OHLCV pivot/base setup detection. Not in v1. |
+| **Trade Opportunity Auto-Detect** | **Implemented as the EP Technical Setup Test** (`scanners/ep/setup.py:236`): pure-math OHLCV layer computing 5 boolean setup features (base, volume spike, pullback contrast, EMA 9/20/50 support, VWAP support); stock survives when ≥1 enabled feature holds. Replaces the deferred v2 item. |
+| **EP Technical Setup Test** | Master toggle + 5 per-feature toggles in the Scanner filter rail ("EP technical" var group). When active, EP survivors = stocks with `features_held ≥ 1`; Baseline/Strict gates stay computed + displayed but never filter. All features off → gate semantics. (`tools/variables.py:34`, `scanners/ep/runner.py:24`) |
+| **Setup Feature** | One of the 5 boolean EP features: `base_detected`, `volume_spike`, `pullback_contrast`, `ema_support`, `vwap_support`. Computed from 300 daily OHLCV bars via `score_ep_setup()`. `features_held` counts enabled held features. (`scanners/ep/setup.py`, `models/ep.py:9`) |
 | **Tavily Search** | News/web search API used in Agent 2–3 for both EP (catalyst event search) and VCP (dual-query: taxonomy + leadership). Free tier: 1,000 searches/month. |
 | **Tavily Dual-Query** | VCP-specific: two parallel Tavily calls per stock — Query 1 (sector/industry taxonomy, basic depth) + Query 2 (market leadership/growth catalysts, advanced depth). Executed concurrently per stock with bounded asyncio semaphore. |
 | **Batch OHLCV** | `batch_get_stock_data()` in `polygon.py`: fetches 300 daily bars per stock via Polygon.io REST API with ThreadPoolExecutor concurrency, retry on rate-limit/5xx, soft-fail per symbol. Used by VCP and BO Agent 1; EP uses single-fetch `get_stock_data()`. |
 | **Daily Run** | One stamped execution of the configured agent chain. |
 | **Auto Run** | Wizard: Pipeline (EP/VCP/BO) → Force Include → Gate → name. Paste skips screener and always applies Gate. For EP: screener + Baseline/Strict gates. For VCP/BO: screener (Stage 2 pre-filter) + structural gates. |
 | **Manual Run** | Wizard: Force Include first; paste offers Apply Gate vs Run all, then Catalyst / Analysis / name. For EP: Baseline/Strict gates. For VCP/BO: structural gates (Apply) or no gates (Run all pasted). |
-| **Pipeline Type** | Scan family for a Daily Run: `daily_ep_scan` (EP pipeline), `daily_vcp_scan` (VCP pipeline), or `daily_bo_scan` (BO pipeline). User selects via CLI subcommand or wizard first question. |
+| **Pipeline Type** | Scan family for a Daily Run: `daily_ep_scan` (EP pipeline), `daily_vcp_scan` (VCP pipeline), `daily_bo_scan` (BO pipeline), `daily_zhao_scan` (照妖鏡), or `daily_premarket_scan` (premarket grep). User selects via CLI subcommand or wizard first question. |
 | **Analysis Method** | Post-Catalyst scoring; v1 only EP Rating. |
 | **Run Artifact** | Stamped `{name}_agentN.json` under `output/<date>/<time>_<name>/`. |
-| **RunConfig** | `RunConfig` dataclass (`pipeline.py:49`): all pipeline parameters — name, select, run_catalyst, analysis_method, limit, force_keys, use_screener, apply_gates, min_rating, pipeline_type, output_root. |
-| **RunResult** | `RunResult` dataclass (`pipeline.py:64`): exit_code, run_dir, steps_completed, error. Returned by `run_daily()`. |
+| **RunConfig** | `RunConfig` dataclass (`pipeline.py:92`): all pipeline parameters — name, select, run_catalyst, analysis_method, limit, force_keys, use_screener, apply_gates, min_rating, pipeline_type, output_root. |
+| **RunResult** | `RunResult` dataclass (`pipeline.py:108`): exit_code, run_dir, steps_completed, error. Returned by `run_daily()`. |
 | **Run Progress** | Live terminal timeline of a Daily Run: persistent stage lines (Agent 1 / Catalyst / EP Rating), substeps, and a per-symbol ticker with remaining count. Terminal-only, not persisted to Run Artifacts. The batch OHLCV phase gets its own Rich progress bar with elapsed time and ETA, throttled every 5 fetches to avoid flicker. (`progress.py:49`) |
 | **Polygon.io** | Official stock market data API (`polygon-api-client` SDK). Replaces TradingView (tvDatafeed + tradingview_screener) as the sole data source. Provides Ticker Details (symbol resolution, exchange, market cap) and daily aggregate bars (OHLCV). Polyfill for the removed Screener Pre-Filter via `passes_market_cap_gate()`. Config via `POLYGON_API_KEY` in `.env`. (`polygon.py:24`) |
 | **Market Cap Gate** | Post-screener replacement: `passes_market_cap_gate()` enforces `market_cap >= MIN_MARKET_CAP` ($300M). None/missing always rejects (conservative). Applied post-symbol-resolution, pre-OHLCV-fetch in VCP/BO runners. (`scanners/vcp/gates.py:33`) |
@@ -53,7 +55,7 @@ Domain terms for the stock analyze scanners. Prefer these names in code, JSON ke
 
 | Agent | Name | Role | File |
 |-------|------|------|------|
-| **Agent 1 (EP)** | Technical Filter | Polygon.io force-include merge → normalize rows → dual Baseline/Strict gate classification. | `scanners/ep/runner.py:17` |
+| **Agent 1 (EP)** | Technical Filter | Polygon.io force-include merge → normalize rows → dual Baseline/Strict gate classification. With the EP Technical Setup Test active, keeps rows where `features_held ≥ 1` (gates informational). | `scanners/ep/runner.py:24` |
 | **Agent 2 (EP)** | Catalyst Intelligence | Tavily news search (max_results=3) per symbol → OpenRouter LLM compresses to `CatalystSummary`. Soft-fails per symbol. | `agents/catalyst.py:78` |
 | **Agent 3 (EP)** | EP Rating | Independent Tavily re-fetch (max_results=5) per symbol → OpenRouter LLM rates 1–5 → hard caps applied → sorted best→worst. | `agents/rating.py:72` |
 
@@ -273,7 +275,7 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 | **Lane** | One path from Universe to a terminal component; parallel lanes merge by SymbolKey into the lane-merge table. |
 | **Lane-Merge Table** | The graph-run results view: one row per symbol, with lanes, a normalized rating, and the source components. Rating precedence: `final_rating -> ep_rating -> funnel_stars -> structural_rating/setup_rating -> none`. |
 | **Preview Estimate** | `POST /api/runs/preview` — runs the Universe snapshot + prefilter (1 call) and returns `{symbol_count, estimated_seconds}` so the user can confirm Polygon cost before a graph run. `estimated_seconds = ceil(symbol_count × calls_per_symbol / effective_calls_per_min)`. |
-| **Scanner Family** | The Scanner's `family` variable (`ep`/`vcp`/`bo`/`custom`, renamed from the stub's `ep_gap`) swaps which threshold groups the inspector shows. |
+| **Scanner Family** | The Scanner's `family` variable (`ep`/`vcp`/`bo`/`zhao`/`premarket`/`custom`, renamed from the stub's `ep_gap`) swaps which threshold groups the inspector shows. |
 | **Daily Preset Definition** | One of three full-chain canvas definitions seeded into `pipeline_definitions` at server boot by `server/app/seed.py`: `Daily VCP Scan`, `Daily BO Scan`, `Daily EP Scan` (each `Universe → Scanner → AI Search → Report`). Seed-if-absent **by name** (idempotent, self-healing — user edits survive, deletions resurrect). The universe-source default is carried as `graph.defaults.universe_source` (`"snapshot"` for BO, `"paste"` for VCP/EP); the walker ignores this extra top-level key. |
 
 ---
@@ -296,3 +298,40 @@ See [CONTEXT.md](CONTEXT.md) for full definitions and avoided synonyms.
 | **Interrupted-Run Reconciliation** | On server startup, `Repo.mark_interrupted_runs()` (`server/app/db.py:137`) marks orphaned `queued`/`running` rows `failed` with error `server restarted — run interrupted`. |
 | **Control Endpoint** | `POST /api/runs/{id}/control` (`server/app/routes/runs.py:199`) with actions `skip|pause|resume|cancel|confirm` (confirm carries `decision: proceed|skip|cancel` + `node_id`). |
 | **`node:<id>` Artifact** | Per-node artifact persisted on graph-run completion/cancel: `{tool_id, status, output_rows, errors, dropped, duration_ms, error}` (`server/app/jobs.py:145`). Used to reconstruct node progress for late SSE subscribers. |
+
+---
+
+## Guided 5-Phase Scan Flow (UI)
+
+| Term | Meaning |
+|------|---------|
+| **Guided 5-Phase Scan Flow** | The linear frontend workflow replacing the component-graph editor (`web/app/flow/page.tsx`): **1 Universe → 2 Scanner → 3 Pattern → 4 AI Search → 5 Report**. Reuses the existing pipeline/SSE/preview machinery unchanged. |
+| **Flow Draft** | The client-side persisted workflow state (`web/lib/flow.ts`, `FlowState`), stored under `stock-scan-flow-v1` in `localStorage` for reload recovery. Includes universe config, family, scanner vars, scan/search run ids, and extracted rows. |
+| **Phase Stepper** | Persistent top nav (`PhaseStepper.tsx`). A phase is **locked** (`phaseLocked`) when its prerequisite data is missing and shows ✓ (`phaseDone`) when its work is complete: Scanner needs a universe, Pattern/AI Search need scan rows, Report needs ranked rows. |
+| **Starter Preset** | A seeded `pipeline_definitions` row matching `/^Daily (VCP\|BO\|EP) Scan$/`, surfaced in `PresetManager.tsx` as a family-only one-click scanner config. "My settings" are saved `component_templates` rows (full variable snapshots). zhao/premarket starters (`照妖鏡 realtime`, `照妖鏡 daily`, `Premarket grep`) are builtin frontend presets (`BUILTIN_STARTERS`) until seeded definitions exist. |
+| **Pattern Evidence** | Chart evidence fetched via `POST /api/ohlcv` (`server/app/routes/symbols.py`, wrapping `batch_get_stock_data`) and rendered with `lightweight-charts` in `ChartCard.tsx`. Overlays (`patternOverlay` in `web/lib/flow.ts`) anchor base high/low, KDE pivot, breakout bar, and gap day from scan-row fields. Evidence-only: no keep/drop gate, all survivors flow to AI Search. |
+| **Pattern Anchor Fields** | 0-based bar indices on scanner rows that drive chart overlays: `base_start_idx` / `base_end_idx` / `breakout_idx` (BO, from `BoSetupRating`), plus price anchors `base_high` / `base_low` / `pivot` / `prior_close`. |
+| **Activity Feed** | The persistent "what's happening" stream (`ActivityFeed.tsx` + `useRunEvents` in `web/lib/runEvents.ts`): timestamped, color-coded SSE events from `subscribeToRunEvents`, auto-scrolling; collapses to a slim vertical status bar when no run is active. |
+| **`node:sc_1` / `node:r_1` Artifacts** | The scanner/search run node artifacts the flow reads back on completion: `scannerRowsFromArtifacts` pulls `output_rows.bucket`, `reportRowsFromArtifacts` pulls `output_rows.rated` then falls back to `merge_table`. |
+| **Scan Run** | Phase 2 run: `Universe → Scanner` graph (`scanRunBody`), pasted universe → `force_symbols`. Drives the results table. |
+| **Search Run** | Phase 4 run: `Universe → Scanner → Search → Report` graph (`searchRunBody`) with surviving symbols as the paste universe — deterministic re-run, no `seed_rows` optimization (fog). The `search` node can fire the runtime `confirm_needed` gate for large batches. |
+
+---
+
+## 照妖鏡 (Zhao) + Premarket families
+
+| Term | Meaning |
+|------|---------|
+| **照妖鏡 (zhao)** | "Mirror that reveals the demon" — scanner family with two variants (`zhao_variant`): `realtime` (stock vs benchmark today% margin) and `daily` (20d relative strength + 52w-high proximity). No AI Search (rate limits). Backend: `scanners/zhao/`, `models/zhao.py`. |
+| **Zhao Realtime** | Manual-trigger anytime. Keep rule: `close > SMA20` AND stock today% − benchmark today% ≥ `zhao_min_margin_pct` (default 1.0). Benchmark = `zhao_benchmark` (SPY\|QQQ, default SPY). Tier 5≥3.0 / 4≥1.5 / 3>0 / 2. Ranked by margin desc. |
+| **Zhao Daily (EOD)** | Keep rule: `close > SMA20`, 20d RS vs benchmark ≥ `zhao_min_rs_pct`, close within `zhao_max_high_dist_pct` (default 15%) of the 252d high. Ranked by RS desc. Tier = RS + 52w proximity composite. Persists survivors to `scan_signals` for the streak. |
+| **Market Margin** | `margin_pct` = stock today% − benchmark today% (both vs prior close). Realtime gate + rank key. |
+| **Weak-Day Relative Strength** | `rs_20d` = (stock 20d return %) − (benchmark 20d return %) using close[-1] vs close[-21]. Daily gate + rank key. |
+| **52-Week High Proximity** | `pct_from_high` = (close / 252d high − 1) × 100, negative below the high. Daily gate (`≥ −max_high_dist_pct`). |
+| **Consecutive-Day Streak** | zhao daily survivor count of consecutive trading dates ending today (`streak = prior + 1`); displayed as 1 / 2 / 3+ (`streak_class`). Same-day re-runs never inflate. |
+| **scan_signals** | DB table (`schema.sql`): one row per `(symbol, scan_family, scan_variant, signal_date)` a symbol survived a scan. `Repo.record_scan_signals` (idempotent upsert) + `Repo.get_scan_streaks` (strictly prior dates). Wired in `server/app/jobs.py` via `node_overrides["__streaks__"]` (zhao daily only). |
+| **SIC Sector** | Polygon Ticker Details `sic_description` — the sector string attached to scanner rows (zhao `sector`, premarket `sector`) for sector grouping. No other sector source. |
+| **Premarket grep** | `premarket` family, single Polygon snapshot call at run time (~9:00–9:15 ET). Filter `change_pct ≥ premarket_min_change_pct` (default 5.0), sort desc, cap to `premarket_cap` (default 300), plus pasted symbols. No AI Search. |
+| **Pre-market Change %** | `change_pct` from the Polygon snapshot (`todaysChangePerc`) vs prior close; includes premarket activity from 4am ET (research 03). Must-notice gate + rank key. |
+| **Premarket Volume Flag** | Informational `vol_flag`: `volume ≥ premarket_min_vol_mult × 20d ADV` when `premarket_min_vol_mult > 0` (0 = off, flag always False). |
+| **Family Has Search** | `FAMILY_HAS_SEARCH` (`web/lib/flow.ts`): `false` for zhao/premarket → stepper is 1→2→3→5 (`phasesForFamily`), and the scanner bucket rows become the report rows directly. |

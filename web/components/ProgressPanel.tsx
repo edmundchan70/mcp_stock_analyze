@@ -16,42 +16,43 @@ export function ProgressPanel({ state }: { state: ProgressState }) {
   );
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+    <div className="panel p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Progress</h2>
+        <h2 className="text-2xs font-semibold uppercase tracking-wider text-slate-500">Progress</h2>
         {!state.done && !state.failed && (
-          <span className="animate-pulse text-xs text-blue-300">running…</span>
+          <span className="animate-pulse text-xs text-accent-400">running…</span>
         )}
       </div>
 
       {state.ticker && (
-        <div className="mb-3 rounded-md bg-slate-900 px-3 py-2 text-sm text-slate-300">
-          {state.ticker.description}: {state.ticker.index}/{state.ticker.total} {state.ticker.symbol}
+        <div className="mb-3 rounded-md border border-ink-800 bg-ink-850 px-3 py-2 font-mono text-xs text-slate-400">
+          {state.ticker.description}: {state.ticker.index}/{state.ticker.total}{" "}
+          <span className="text-accent-400">{state.ticker.symbol}</span>
         </div>
       )}
 
       <ul className="space-y-1 font-mono text-xs">
         {stageEvents.length === 0 && !state.done && !state.failed && (
-          <li className="text-slate-500">Waiting for the scan to start…</li>
+          <li className="text-slate-600">Waiting for the scan to start…</li>
         )}
         {stageEvents.map((e, i) => (
           <li
             key={i}
             className={
               e.type === "fail"
-                ? "text-rose-400"
+                ? "text-down-500"
                 : e.type === "stage_done"
-                  ? "text-emerald-300"
+                  ? "text-up-500"
                   : e.type === "console"
-                    ? "text-slate-500"
-                    : "text-slate-300"
+                    ? "text-slate-600"
+                    : "text-slate-400"
             }
           >
             {e.text}
           </li>
         ))}
-        {state.failed && <li className="text-rose-400">{state.error ?? "Scan failed"}</li>}
-        {state.done && <li className="text-emerald-300">Scan complete</li>}
+        {state.failed && <li className="text-down-500">{state.error ?? "Scan failed"}</li>}
+        {state.done && <li className="text-up-500">Scan complete</li>}
       </ul>
     </div>
   );

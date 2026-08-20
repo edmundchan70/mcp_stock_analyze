@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { controlRun, createRun, getRun, listRuns, subscribeToRunEvents } from "@/lib/api";
+import { controlRun, createRun, fetchOhlcv, getRun, listRuns, subscribeToRunEvents } from "@/lib/api";
 
 const BASE = "http://localhost:8000";
 
@@ -23,14 +23,18 @@ describe("lib/api", () => {
     mockFetch({ runs: [{ id: "1" }] });
     const runs = await listRuns();
     expect(runs).toEqual([{ id: "1" }]);
-    expect(fetch).toHaveBeenCalledWith(`${BASE}/api/runs`);
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${BASE}/api/runs`);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("getRun hits the detail endpoint", async () => {
     mockFetch({ id: "1", artifacts: {} });
     const run = await getRun("1");
     expect(run.id).toBe("1");
-    expect(fetch).toHaveBeenCalledWith(`${BASE}/api/runs/1`);
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${BASE}/api/runs/1`);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("createRun posts JSON with the right body", async () => {
@@ -83,5 +87,21 @@ describe("lib/api", () => {
     expect(onEvent).toHaveBeenCalledWith({ type: "done", counts: { 5: 1 } });
     unsub();
     expect(close).toHaveBeenCalled();
+  });
+
+  it("fetchOhlcv posts symbols + bars and returns the symbol map", async () => {
+    mockFetch({ symbols: { AAPL: [{ datetime: "2026-08-14", close: 10.0 }], MSFT: [] } });
+    const map = await fetchOhlcv([{ symbol: "AAPL" }, { symbol: "MSFT" }], 300);
+    expect(map).toEqual({ AAPL: [{ datetime: "2026-08-14", close: 10.0 }], MSFT: [] });
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${BASE}/api/ohlcv`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      symbols: [
+        { symbol: "AAPL", exchange: "NASDAQ" },
+        { symbol: "MSFT", exchange: "NASDAQ" },
+      ],
+      bars: 300,
+    });
   });
 });

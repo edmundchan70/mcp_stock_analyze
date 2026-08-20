@@ -14,6 +14,7 @@ from .db import Repo, close_repo, connect_repo
 from .jobs import JobManager
 from .routes.definitions import router as definitions_router
 from .routes.runs import router as runs_router
+from .routes.symbols import router as symbols_router
 from .routes.tools import router as tools_router
 from .seed import seed_default_definitions
 
@@ -58,6 +59,7 @@ def create_app(repo: Optional[Repo] = None) -> FastAPI:
     app.include_router(runs_router)
     app.include_router(tools_router)
     app.include_router(definitions_router)
+    app.include_router(symbols_router)
 
     @app.get("/api/health")
     async def health() -> dict:

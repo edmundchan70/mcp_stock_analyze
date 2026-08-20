@@ -42,3 +42,15 @@ CREATE TABLE IF NOT EXISTS component_templates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at DESC);
+
+-- 照妖鏡 daily streak persistence: one row per (symbol, family, variant, date)
+-- a symbol survived a scan. Streak = count of consecutive dates ending today.
+CREATE TABLE IF NOT EXISTS scan_signals (
+    symbol TEXT NOT NULL,
+    scan_family TEXT NOT NULL,
+    scan_variant TEXT NOT NULL,
+    signal_date DATE NOT NULL,
+    PRIMARY KEY (symbol, scan_family, scan_variant, signal_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_signals_sym ON scan_signals (symbol, scan_family, scan_variant, signal_date);

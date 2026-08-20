@@ -22,15 +22,22 @@ def _key(row: dict[str, Any]) -> tuple[str, str]:
 
 
 def _rows_from_payload(payload: dict[str, Any], family: str) -> list[dict[str, Any]]:
-    """Flatten an execute_*_scan payload into rows."""
+    """Flatten an execute_*_scan payload into rows (deduped by symbol key).
+
+    EP's dual buckets overlap (strict ⊆ baseline, and feature mode mirrors
+    the same survivor list into both) so EP rows are deduped by SymbolKey.
+    """
     if family == "ep":
         stocks: list[Any] = []
+        seen: set[tuple[str, str]] = set()
         for bucket in ("baseline", "strict"):
             for s in payload.get(bucket, {}).get("stocks", []):
-                if isinstance(s, dict):
-                    stocks.append(s)
-                elif hasattr(s, "model_dump"):
-                    stocks.append(s.model_dump(mode="json"))
+                item = s if isinstance(s, dict) else s.model_dump(mode="json")
+                key = _key(item)
+                if key in seen:
+                    continue
+                seen.add(key)
+                stocks.append(item)
         return stocks
 
     ratings = payload.get("ratings", [])
@@ -52,11 +59,37 @@ def _row_number(row: dict[str, Any], key: str, default: Any = None) -> Any:
 # ── Scanner (R1) ─────────────────────────────────────────────────────
 
 
+def _ep_feature_keys(params: dict[str, Any]) -> list[str]:
+    """EP feature keys whose per-feature toggle is ON (default: all on)."""
+    from stock_analyze.scanners.ep.setup import FEATURE_KEYS
+
+    return [k for k in FEATURE_KEYS if bool(params.get(f"ep_feature_{k}", True))]
+
+
+def _ep_thresholds_from_params(params: dict[str, Any]) -> Any:
+    """Build EpSetupThresholds from override vars, or None for defaults."""
+    from stock_analyze.scanners.ep.setup import EpSetupThresholds
+
+    mapping = {
+        "spike_min": "ep_spike_min",
+        "pullback_vol_ratio": "ep_pullback_vol_ratio",
+        "pullback_depth_pct": "ep_pullback_depth_pct",
+        "ema_touch_pct": "ep_ema_touch_pct",
+        "vwap_touch_pct": "ep_vwap_touch_pct",
+        "base_min_days": "ep_base_min_days",
+        "base_max_days": "ep_base_max_days",
+    }
+    overrides = {attr: params[var] for attr, var in mapping.items() if var in params}
+    return EpSetupThresholds(**overrides) if overrides else None
+
+
 def _scanner_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> list[dict]:
     from stock_analyze.pipeline import (
         execute_bo_scan,
         execute_ep_scan,
+        execute_premarket_scan,
         execute_vcp_scan,
+        execute_zhao_scan,
     )
 
     rows = inputs.get("universe") or []
@@ -66,18 +99,43 @@ def _scanner_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> 
 
     family = str(params.get("family", "ep"))
     apply_gates = bool(params.get("ep_apply_gates", True))
+    progress = params.get("__progress__")
     payload: dict[str, Any]
     if family == "vcp":
         payload = execute_vcp_scan(
             force_keys=keys,
             limit=int(params.get("ep_limit", 300)),
             apply_gates=apply_gates,
+            batch_progress=progress,
         )
     elif family == "bo":
         payload = execute_bo_scan(
             force_keys=keys,
             limit=int(params.get("ep_limit", 300)),
             apply_gates=apply_gates,
+            batch_progress=progress,
+        )
+    elif family == "zhao":
+        payload = execute_zhao_scan(
+            force_keys=keys,
+            variant=str(params.get("zhao_variant", "realtime")),
+            benchmark=str(params.get("zhao_benchmark", "SPY")),
+            apply_gates=apply_gates,
+            sma20_buffer_pct=float(params.get("zhao_sma20_buffer_pct", 0.0)),
+            min_margin_pct=float(params.get("zhao_min_margin_pct", 1.0)),
+            min_rs_pct=float(params.get("zhao_min_rs_pct", 0.0)),
+            max_high_dist_pct=float(params.get("zhao_max_high_dist_pct", 15.0)),
+            streaks=params.get("__streaks__"),
+            batch_progress=progress,
+        )
+    elif family == "premarket":
+        payload = execute_premarket_scan(
+            force_keys=keys,
+            min_change_pct=float(params.get("premarket_min_change_pct", 5.0)),
+            min_vol_mult=float(params.get("premarket_min_vol_mult", 0.0)),
+            cap=int(params.get("premarket_cap", 300)),
+            apply_gates=apply_gates,
+            batch_progress=progress,
         )
     elif family == "custom":
         raise ValueError(f"custom scan {params.get('scan_id')!r} not registered")
@@ -87,6 +145,11 @@ def _scanner_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> 
             select=str(params.get("ep_select", "strict")),
             limit=int(params.get("ep_limit", 300)),
             apply_gates=apply_gates,
+            batch_progress=progress,
+            ep_features=bool(params.get("ep_features_enabled", True)),
+            ep_feature_keys=_ep_feature_keys(params),
+            ep_keep_if_any=bool(params.get("ep_keep_if_any", True)),
+            ep_thresholds=_ep_thresholds_from_params(params),
         )
 
     out = _rows_from_payload(payload, family if family != "custom" else "ep")
@@ -195,13 +258,21 @@ def _search_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> l
     ep_rows = [r for r in rows if not _is_structural(r)]
 
     checkpoint = checkpoint_for(params.get("__control_id__"))
+    progress = params.get("__progress__")
+    on_ticker = progress.ticker if progress is not None else None
 
     out: list[dict[str, Any]] = []
 
     # VCP path: Tavily dual-query enrichment (per-symbol soft-fail).
     if vcp_rows:
         context_map: dict[tuple[str, str], dict[str, Any]] = {}
-        enriched = enrich_with_vcp_context(vcp_rows, checkpoint=checkpoint)
+        if progress is not None:
+            progress.begin_ticker(len(vcp_rows), "VCP enrichment", throttle=1)
+        enriched = enrich_with_vcp_context(
+            vcp_rows, checkpoint=checkpoint, on_ticker=on_ticker,
+        )
+        if progress is not None:
+            progress.end_ticker()
         for c in enriched:
             item = c if isinstance(c, dict) else c.model_dump(mode="json")
             key = (str(item.get("symbol") or "").upper(), str(item.get("exchange") or "NASDAQ").upper())
@@ -217,8 +288,20 @@ def _search_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> l
 
     # EP path: catalyst search + LLM rating (Agent 2 + Agent 3 chain).
     if ep_rows:
-        enriched = enrich_with_catalysts(ep_rows, checkpoint=checkpoint)
-        rated = rate_ep_catalysts(enriched, checkpoint=checkpoint)
+        if progress is not None:
+            progress.begin_ticker(len(ep_rows), "Catalyst search", throttle=1)
+        enriched = enrich_with_catalysts(
+            ep_rows, checkpoint=checkpoint, on_ticker=on_ticker,
+        )
+        if progress is not None:
+            progress.end_ticker()
+        if progress is not None:
+            progress.begin_ticker(len(enriched), "EP rating", throttle=1)
+        rated = rate_ep_catalysts(
+            enriched, checkpoint=checkpoint, on_ticker=on_ticker,
+        )
+        if progress is not None:
+            progress.end_ticker()
         rated_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rated:
             item = r if isinstance(r, dict) else r.model_dump(mode="json")
@@ -245,7 +328,7 @@ def _search_callable(inputs: dict[str, list[dict]], params: dict[str, Any]) -> l
 
 def extract_rating(row: dict[str, Any]) -> float:
     """Best-effort numeric rating from any row shape."""
-    for k in ("ep_rating", "funnel_stars", "rating", "structural_rating"):
+    for k in ("ep_rating", "funnel_stars", "rating", "structural_rating", "strength"):
         v = row.get(k)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             return float(v)

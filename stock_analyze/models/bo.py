@@ -80,6 +80,8 @@ class BoSetupRating(BaseModel):
     # Meta
     base_high: float = Field(default=0.0, description="Base high price")
     base_low: float = Field(default=0.0, description="Base low price")
+    base_start_idx: Optional[int] = Field(default=None, description="0-based index of first base bar")
+    base_end_idx: Optional[int] = Field(default=None, description="0-based index of last base bar")
     pivot: float = Field(default=0.0, description="KDE pivot (resistance) price")
     breakout_idx: Optional[int] = Field(default=None, description="0-based breakout bar index")
     breakout_date: Optional[date] = Field(default=None, description="Breakout bar date")

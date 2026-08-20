@@ -553,6 +553,8 @@ def score_bo_setup(
         sma50_extension_pct=sma50_extension_pct,
         base_high=base.base_high if base else 0.0,
         base_low=base.base_low if base else 0.0,
+        base_start_idx=base.start_idx if base else None,
+        base_end_idx=base.end_idx if base else None,
         pivot=base.pivot if base else 0.0,
         breakout_idx=breakout_idx,
         breakout_date=breakout_date,

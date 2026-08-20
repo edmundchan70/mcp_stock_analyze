@@ -1,6 +1,7 @@
 import type {
   ComponentTemplate,
   GraphDefinition,
+  OhlcvResponse,
   PipelineDefinition,
   PreviewResponse,
   RunDetail,
@@ -11,6 +12,34 @@ import type {
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// Fail fast instead of hanging forever when the backend is down or wedged
+// (e.g. uvicorn --reload deadlock on Windows). The home page polls runs every
+// 5s, so keep this below the poll interval to avoid overlapping requests.
+const REQUEST_TIMEOUT_MS = 4000;
+
+const UNREACHABLE =
+  `Backend unreachable (${BASE}). Is the API server running? ` +
+  `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`;
+
+/**
+ * fetch with an abort timeout. Turns a wedged/absent backend into a clear
+ * error instead of leaving the UI on an eternal "Loading…".
+ */
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(`${BASE}${path}`, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (controller.signal.aborted) throw new Error(UNREACHABLE);
+    throw new Error(
+      `Backend unreachable (${BASE}) — ${e instanceof Error ? e.message : String(e)}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -20,18 +49,18 @@ async function handle<T>(res: Response): Promise<T> {
 }
 
 export async function listRuns(): Promise<RunSummary[]> {
-  const res = await fetch(`${BASE}/api/runs`);
+  const res = await apiFetch("/api/runs");
   const data = await handle<{ runs: RunSummary[] }>(res);
   return data.runs;
 }
 
 export async function getRun(id: string): Promise<RunDetail> {
-  const res = await fetch(`${BASE}/api/runs/${id}`);
+  const res = await apiFetch(`/api/runs/${id}`);
   return handle<RunDetail>(res);
 }
 
 export async function createRun(body: Record<string, unknown>): Promise<RunSummary> {
-  const res = await fetch(`${BASE}/api/runs`, {
+  const res = await apiFetch("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -66,24 +95,26 @@ export const PIPELINE_LABELS: Record<string, string> = {
   daily_ep_scan: "Episodic Pivot (EP)",
   daily_vcp_scan: "VCP",
   daily_bo_scan: "Qullamaggie BO",
+  daily_zhao_scan: "照妖鏡",
+  daily_premarket_scan: "Premarket grep",
 };
 
 // ── component graph editor API (T13/T20/T22) ───────────────────────
 
 export async function listTools(): Promise<ToolSpec[]> {
-  const res = await fetch(`${BASE}/api/tools`);
+  const res = await apiFetch("/api/tools");
   const data = await handle<{ tools: ToolSpec[] }>(res);
   return data.tools;
 }
 
 export async function listDefinitions(): Promise<PipelineDefinition[]> {
-  const res = await fetch(`${BASE}/api/definitions`);
+  const res = await apiFetch("/api/definitions");
   const data = await handle<{ definitions: PipelineDefinition[] }>(res);
   return data.definitions;
 }
 
 export async function saveDefinition(body: { name: string; graph: GraphDefinition }, id?: string): Promise<PipelineDefinition> {
-  const res = await fetch(`${BASE}/api/definitions/${id ?? ""}`, {
+  const res = await apiFetch(`/api/definitions/${id ?? ""}`, {
     method: id ? "PUT" : "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -92,17 +123,17 @@ export async function saveDefinition(body: { name: string; graph: GraphDefinitio
 }
 
 export async function deleteDefinition(id: string): Promise<void> {
-  await fetch(`${BASE}/api/definitions/${id}`, { method: "DELETE" });
+  await apiFetch(`/api/definitions/${id}`, { method: "DELETE" });
 }
 
 export async function listComponentTemplates(): Promise<ComponentTemplate[]> {
-  const res = await fetch(`${BASE}/api/component-templates`);
+  const res = await apiFetch("/api/component-templates");
   const data = await handle<{ templates: ComponentTemplate[] }>(res);
   return data.templates;
 }
 
 export async function saveComponentTemplate(body: Omit<ComponentTemplate, "id">): Promise<ComponentTemplate> {
-  const res = await fetch(`${BASE}/api/component-templates`, {
+  const res = await apiFetch("/api/component-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -111,16 +142,35 @@ export async function saveComponentTemplate(body: Omit<ComponentTemplate, "id">)
 }
 
 export async function deleteComponentTemplate(id: string): Promise<void> {
-  await fetch(`${BASE}/api/component-templates/${id}`, { method: "DELETE" });
+  await apiFetch(`/api/component-templates/${id}`, { method: "DELETE" });
 }
 
 export async function previewRun(body: Record<string, unknown>): Promise<PreviewResponse> {
-  const res = await fetch(`${BASE}/api/runs/preview`, {
+  const res = await apiFetch("/api/runs/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   return handle<PreviewResponse>(res);
+}
+
+/**
+ * Fetch daily OHLCV bars for a batch of symbols (pattern-phase chart evidence).
+ */
+export async function fetchOhlcv(
+  symbols: { symbol: string; exchange?: string }[],
+  bars = 300,
+): Promise<Record<string, OhlcvResponse["symbols"][string]>> {
+  const res = await apiFetch("/api/ohlcv", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      symbols: symbols.map((s) => ({ symbol: s.symbol, exchange: s.exchange ?? "NASDAQ" })),
+      bars,
+    }),
+  });
+  const data = await handle<OhlcvResponse>(res);
+  return data.symbols;
 }
 
 /**
@@ -133,7 +183,7 @@ export async function controlRun(
   nodeId?: string,
   decision?: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/api/runs/${id}/control`, {
+  const res = await apiFetch(`/api/runs/${id}/control`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, node_id: nodeId, decision }),

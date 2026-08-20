@@ -283,10 +283,98 @@ class Repo:
         )
         return result == "DELETE 1"
 
+    # ── scan_signals (zhao daily streak) ─────────────────────────────
+
+    async def record_scan_signals(
+        self,
+        symbols: list[str],
+        scan_family: str,
+        scan_variant: str,
+        *,
+        signal_date: Optional[str] = None,
+    ) -> int:
+        """Upsert today's survivor rows into scan_signals.
+
+        ``signal_date`` defaults to today (``YYYY-MM-DD``). Returns rows written.
+        """
+        day = signal_date or datetime.now(timezone.utc).date().isoformat()
+        if not symbols:
+            return 0
+        written = 0
+        for symbol in symbols:
+            tag = await self.pool.execute(
+                """
+                INSERT INTO scan_signals (symbol, scan_family, scan_variant, signal_date)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (symbol, scan_family, scan_variant, signal_date) DO NOTHING
+                """,
+                str(symbol).upper(),
+                scan_family,
+                scan_variant,
+                day,
+            )
+            if "INSERT 0 1" in str(tag):
+                written += 1
+        return written
+
+    async def get_scan_streaks(
+        self,
+        symbols: list[str],
+        scan_family: str,
+        scan_variant: str,
+        *,
+        as_of: Optional[str] = None,
+    ) -> dict[str, int]:
+        """Consecutive-day survivor count strictly before ``as_of`` per symbol.
+
+        Today's hit is added by the runner (``streak = prior + 1``), so
+        re-running the same scan the same day cannot inflate the streak.
+        Returns ``{symbol: prior_streak}`` for symbols with a prior streak >= 1.
+        """
+        if not symbols:
+            return {}
+        day = as_of or datetime.now(timezone.utc).date().isoformat()
+        rows = await self.pool.fetch(
+            """
+            SELECT symbol, signal_date
+            FROM scan_signals
+            WHERE scan_family = $1 AND scan_variant = $2 AND symbol = ANY($3)
+              AND signal_date < $4
+            ORDER BY symbol, signal_date DESC
+            """,
+            scan_family,
+            scan_variant,
+            [str(s).upper() for s in symbols],
+            day,
+        )
+        streaks: dict[str, int] = {}
+        from datetime import date as _date, timedelta
+
+        for symbol, date_str in rows:
+            symbol = str(symbol).upper()
+            signal = _date.fromisoformat(str(date_str))
+            target = _date.fromisoformat(day)
+            expected = target - timedelta(days=streaks.get(symbol, 0) + 1)
+            if signal == expected:
+                streaks[symbol] = streaks.get(symbol, 0) + 1
+        return streaks
+
 
 async def connect_repo(database_url: str) -> Repo:
-    """Create a pool, bootstrap the schema, and return a Repo."""
-    pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+    """Create a pool, bootstrap the schema, and return a Repo.
+
+    Timeouts are set deliberately: the database may be a serverless Postgres
+    (Neon) whose endpoint can cold-start slowly or drop idle connections. Without
+    these, a DB stall would block the event loop instead of surfacing as an error.
+    """
+    pool = await asyncpg.create_pool(
+        database_url,
+        min_size=1,
+        max_size=5,
+        timeout=10,                    # connect timeout (per connection)
+        command_timeout=60,            # max time for any single query
+        max_inactive_connection_lifetime=240,  # keep under Neon's idle timeout
+    )
     schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     async with pool.acquire() as conn:
         await conn.execute(schema)

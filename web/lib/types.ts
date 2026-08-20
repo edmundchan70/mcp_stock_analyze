@@ -1,4 +1,9 @@
-export type PipelineType = "daily_ep_scan" | "daily_vcp_scan" | "daily_bo_scan";
+export type PipelineType =
+  | "daily_ep_scan"
+  | "daily_vcp_scan"
+  | "daily_bo_scan"
+  | "daily_zhao_scan"
+  | "daily_premarket_scan";
 
 // ── component graph editor (T13/T24) ────────────────────────────────
 
@@ -164,4 +169,19 @@ export interface RatedStock {
   cap_applied?: boolean;
   industry_group_strength_flag?: string | null;
   [key: string]: unknown;
+}
+
+// ── pattern-phase chart evidence (POST /api/ohlcv) ───────────────
+
+export interface OhlcvBar {
+  datetime: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface OhlcvResponse {
+  symbols: Record<string, OhlcvBar[]>;
 }

@@ -261,6 +261,7 @@ def resolve_force_symbol(symbol: str) -> dict[str, Any]:
             "exchange": exchange,
             "market_cap": getattr(details, "market_cap", None),
             "description": getattr(details, "description", ""),
+            "sic_description": getattr(details, "sic_description", ""),
             "close": getattr(details, "share_class_shares_outstanding", None),
         }
     except Exception as exc:
@@ -375,7 +376,32 @@ def resolve_market_caps(
     return resolved
 
 
-def to_ep_row(symbol: str, n_bars: int = 300) -> dict[str, Any]:
+def resolve_batch_details(
+    symbols: list[str],
+    *,
+    max_workers: int = 10,
+) -> dict[str, dict[str, Any]]:
+    """Resolve Ticker Details for every symbol (no market-cap gate).
+
+    Returns a ``{symbol: details}`` map for symbols that resolved; failed
+    symbols are absent. Used by the premarket grep to attach name + SIC sector
+    to capped snapshot survivors.
+    """
+    if not symbols:
+        return {}
+
+    def _resolve(symbol: str) -> tuple[str, Optional[dict[str, Any]]]:
+        return symbol.upper(), resolve_force_symbol(symbol)
+
+    details: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for symbol, result in ex.map(_resolve, symbols):
+            if result is not None:
+                details[symbol.upper()] = result
+    return details
+
+
+def to_ep_row(symbol: str, n_bars: int = 300, df: Optional[pd.DataFrame] = None) -> dict[str, Any]:
     """Build an EP-compatible row from Polygon daily bars.
 
     Ports the logic of ``enrich_from_ohlcv`` (tradingview.py:73) to 300 bars:
@@ -384,8 +410,12 @@ def to_ep_row(symbol: str, n_bars: int = 300) -> dict[str, Any]:
     - event_dollar_volume = close × volume of last bar
     - avg_dollar_volume_50d = mean(close × volume) over ~50 bars
     - market_cap = fetched from ticker details separately (caller provides)
+
+    ``df`` may be passed to reuse an already-fetched OHLCV frame (avoids a
+    second Polygon call when the EP technical feature test needs the bars).
     """
-    df = _fetch_aggs(symbol, n_bars=n_bars)
+    if df is None:
+        df = _fetch_aggs(symbol, n_bars=n_bars)
     if df is None or len(df) < 11:
         raise ValueError(f"Insufficient OHLCV for {symbol}")
 

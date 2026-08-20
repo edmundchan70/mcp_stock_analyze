@@ -16,7 +16,7 @@ from .protocol import VariableDef
 
 SCANNER_VARS: list[VariableDef] = [
     VariableDef("family", "Screening family", "select", "ep",
-                "Family", ["ep", "vcp", "bo", "custom"]),
+                "Family", ["ep", "vcp", "bo", "zhao", "premarket", "custom"]),
     # EP
     VariableDef("ep_select", "Gate bucket", "select", "strict", "EP", ["strict", "baseline", "both"]),
     VariableDef("ep_limit", "Universe cap", "number", 300, "EP"),
@@ -31,6 +31,21 @@ SCANNER_VARS: list[VariableDef] = [
     VariableDef("ep_strict_max_mcap", "Strict: max market cap", "number", 10_000_000_000, "EP strict"),
     VariableDef("ep_strict_min_adv_50d", "Strict: 50d ADV$", "number", 5_000_000, "EP strict"),
     VariableDef("ep_strict_min_event_dollar", "Strict: event-day $ vol", "number", 20_000_000, "EP strict"),
+    # EP technical setup test
+    VariableDef("ep_features_enabled", "Technical test", "boolean", True, "EP technical"),
+    VariableDef("ep_keep_if_any", "Keep if any feature", "boolean", True, "EP technical"),
+    VariableDef("ep_feature_base_detected", "Feature: base", "boolean", True, "EP technical"),
+    VariableDef("ep_feature_volume_spike", "Feature: volume spike", "boolean", True, "EP technical"),
+    VariableDef("ep_feature_pullback_contrast", "Feature: pullback contrast", "boolean", True, "EP technical"),
+    VariableDef("ep_feature_ema_support", "Feature: EMA support", "boolean", True, "EP technical"),
+    VariableDef("ep_feature_vwap_support", "Feature: VWAP support", "boolean", True, "EP technical"),
+    VariableDef("ep_spike_min", "Spike min ×", "number", 3.0, "EP technical"),
+    VariableDef("ep_pullback_vol_ratio", "Pullback vol ratio", "number", 0.5, "EP technical"),
+    VariableDef("ep_pullback_depth_pct", "Pullback depth %", "number", 10.0, "EP technical"),
+    VariableDef("ep_ema_touch_pct", "EMA touch %", "number", 2.0, "EP technical"),
+    VariableDef("ep_vwap_touch_pct", "VWAP touch %", "number", 1.5, "EP technical"),
+    VariableDef("ep_base_min_days", "Base min days", "number", 5, "EP technical"),
+    VariableDef("ep_base_max_days", "Base max days", "number", 40, "EP technical"),
     # VCP
     VariableDef("vcp_min_adv_dollar", "Liquidity ADV$", "number", 10_000_000, "VCP"),
     VariableDef("vcp_adv_window", "ADV$ window (d)", "number", 60, "VCP"),
@@ -47,15 +62,29 @@ SCANNER_VARS: list[VariableDef] = [
     VariableDef("bo_surfing_max_pct", "Max surfing %", "number", 8.0, "BO"),
     VariableDef("bo_surge_min", "Surge min", "number", 1.5, "BO"),
     VariableDef("bo_profile", "Funnel profile", "select", "best", "BO", ["best", "moderate-lose", "widen"]),
+    # 照妖鏡 (zhao)
+    VariableDef("zhao_variant", "Variant", "select", "realtime", "Zhao",
+                ["realtime", "daily"]),
+    VariableDef("zhao_benchmark", "Benchmark", "select", "SPY", "Zhao", ["SPY", "QQQ"]),
+    VariableDef("zhao_sma20_buffer_pct", "SMA20 buffer %", "number", 0.0, "Zhao"),
+    VariableDef("zhao_min_margin_pct", "Min margin % (realtime)", "number", 1.0, "Zhao"),
+    VariableDef("zhao_min_rs_pct", "Min 20d RS % (daily)", "number", 0.0, "Zhao"),
+    VariableDef("zhao_max_high_dist_pct", "Max 52w-high dist % (daily)", "number", 15.0, "Zhao"),
+    # Premarket grep
+    VariableDef("premarket_min_change_pct", "Min premarket change %", "number", 5.0, "Premarket"),
+    VariableDef("premarket_min_vol_mult", "Volume flag × ADV (0 = off)", "number", 0.0, "Premarket"),
+    VariableDef("premarket_cap", "Survivor cap", "number", 300, "Premarket"),
     # Custom
     VariableDef("scan_id", "Registered scan", "select", "momentum", "Custom", ["momentum", "gapper", "rs_leader"]),
 ]
 
 # Scanner shows only the groups of its selected family.
 SCANNER_GROUPS: dict[str, list[str]] = {
-    "ep": ["Family", "EP", "EP baseline", "EP strict"],
+    "ep": ["Family", "EP", "EP baseline", "EP strict", "EP technical"],
     "vcp": ["Family", "VCP"],
     "bo": ["Family", "BO"],
+    "zhao": ["Family", "Zhao"],
+    "premarket": ["Family", "Premarket"],
     "custom": ["Family", "Custom"],
 }
 

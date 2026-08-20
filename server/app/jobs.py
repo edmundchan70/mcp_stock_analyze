@@ -102,6 +102,50 @@ def _graph_confirm_emitter(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop
     return emit
 
 
+def _zhao_daily_scanner_nodes(graph: dict[str, Any]) -> list[str]:
+    """Node ids of zhao daily scanner nodes (need scan_signals streak hooks)."""
+    out: list[str] = []
+    for node in graph.get("nodes") or []:
+        if node.get("tool_id") != "scanner":
+            continue
+        params = node.get("params") or {}
+        if params.get("family") == "zhao" and params.get("zhao_variant", "realtime") == "daily":
+            out.append(node.get("id"))
+    return out
+
+
+async def _streak_overrides(
+    graph: dict[str, Any],
+    universe_rows: list[dict[str, Any]],
+    repo: Repo,
+) -> dict[str, dict[str, Any]]:
+    """node_overrides injecting ``__streaks__`` into each zhao daily scanner node.
+
+    Streaks come from the scan_signals table (prior consecutive-day survivor
+    counts); the runner adds today's hit (``streak = prior + 1``).
+    """
+    node_ids = _zhao_daily_scanner_nodes(graph)
+    if not node_ids:
+        return {}
+    symbols = [str(r.get("symbol")) for r in universe_rows if r.get("symbol")]
+    streaks = await repo.get_scan_streaks(symbols, "zhao", "daily")
+    if not streaks:
+        return {}
+    return {nid: {"__streaks__": streaks} for nid in node_ids}
+
+
+async def _record_zhao_signals(result: Any, graph: dict[str, Any], repo: Repo) -> None:
+    """Post-run: persist today's survivors into scan_signals (zhao daily only)."""
+    for node_id in _zhao_daily_scanner_nodes(graph):
+        node_result = result.nodes.get(node_id)
+        if node_result is None:
+            continue
+        bucket_rows = (node_result.output_rows or {}).get("bucket", [])
+        symbols = [str(r.get("symbol")) for r in bucket_rows if r.get("symbol")]
+        if symbols:
+            await repo.record_scan_signals(symbols, "zhao", "daily")
+
+
 async def run_graph_job(
     run_id: str,
     params: dict[str, Any],
@@ -124,14 +168,18 @@ async def run_graph_job(
         if errors:
             raise ValueError("graph invalid: " + "; ".join(errors))
 
+        node_overrides = dict(params.get("node_overrides") or {})
+        node_overrides.update(await _streak_overrides(graph, universe_rows, repo))
+
         result = await asyncio.to_thread(
             run_graph,
             definition,
             universe_rows,
-            node_overrides=params.get("node_overrides") or {},
+            node_overrides=node_overrides,
             on_node=_graph_node_emitter(queue, loop),
             control=control,
             on_confirm=_graph_confirm_emitter(queue, loop),
+            progress=EventReporter(queue, loop),
         )
     except Exception as exc:
         logger.error("Graph run %s failed: %s", run_id, exc)
@@ -141,6 +189,8 @@ async def run_graph_job(
 
     terminal_status = "cancelled" if result.cancelled else "succeeded"
     try:
+        if not result.cancelled:
+            await _record_zhao_signals(result, graph, repo)
         counts: dict[str, Any] = {"reports": result.merge_table["count"], "degraded": result.degraded}
         for node_id, node_result in result.nodes.items():
             await repo.upsert_artifact(

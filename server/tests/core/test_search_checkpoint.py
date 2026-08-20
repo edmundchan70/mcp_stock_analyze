@@ -65,15 +65,15 @@ def test_search_callable_plumbs_checkpoint_to_all_agents(monkeypatch):
     cid = register_control(FakeControl())
     captured: dict[str, object] = {}
 
-    def vcp_enrich(rows, checkpoint=None):
+    def vcp_enrich(rows, checkpoint=None, on_ticker=None):
         captured["vcp"] = checkpoint
         return [{"symbol": r["symbol"], "exchange": r.get("exchange", "NASDAQ"), "sector": "Tech"} for r in rows]
 
-    def catalyst_enrich(rows, checkpoint=None):
+    def catalyst_enrich(rows, checkpoint=None, on_ticker=None):
         captured["catalyst"] = checkpoint
         return [dict(r) for r in rows]
 
-    def ep_rate(rows, checkpoint=None):
+    def ep_rate(rows, checkpoint=None, on_ticker=None):
         captured["rating"] = checkpoint
         return [{**r, "ep_rating": 4, "catalyst_type": "EARNINGS"} for r in rows]
 

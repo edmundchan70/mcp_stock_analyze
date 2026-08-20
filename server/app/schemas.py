@@ -6,7 +6,13 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-PIPELINE_TYPES = ("daily_ep_scan", "daily_vcp_scan", "daily_bo_scan")
+PIPELINE_TYPES = (
+    "daily_ep_scan",
+    "daily_vcp_scan",
+    "daily_bo_scan",
+    "daily_zhao_scan",
+    "daily_premarket_scan",
+)
 UNIVERSE_SOURCES = ("paste", "snapshot")
 
 

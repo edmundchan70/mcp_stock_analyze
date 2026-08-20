@@ -20,6 +20,7 @@ from stock_analyze.agents.enrichment import enrich_with_vcp_context, load_vcp_st
 from stock_analyze.agents.rating import rate_ep_catalysts
 from stock_analyze.data.polygon import (
     fetch_market_snapshot,
+    get_stock_data,
     prefilter_snapshot,
     resolve_force_symbol,
     resolve_market_caps,
@@ -36,6 +37,7 @@ from stock_analyze.scanners.bo.runner import run_bo_scan
 from stock_analyze.scanners.bo.watchlist import apply_funnel, q_base_to_stars, tradable_count
 from stock_analyze.scanners.ep.gates import BASELINE
 from stock_analyze.scanners.ep.runner import merge_force_rows, run_ep_scan
+from stock_analyze.scanners.ep.setup import EpSetupThresholds
 from stock_analyze.scanners.vcp.gates import build_rated_stock
 from stock_analyze.scanners.vcp.runner import merge_vcp_force_rows as _merge_vcp_force_rows
 from stock_analyze.scanners.vcp.runner import run_vcp_scan
@@ -167,6 +169,10 @@ def execute_ep_scan(
     limit: int,
     use_screener: bool = False,
     apply_gates: bool = True,
+    ep_features: bool = False,
+    ep_feature_keys: Optional[Sequence[str]] = None,
+    ep_keep_if_any: bool = True,
+    ep_thresholds: Optional[EpSetupThresholds] = None,
     on_stage: Optional[StageFn] = None,
     batch_progress: Any = None,
 ) -> dict[str, Any]:
@@ -175,12 +181,20 @@ def execute_ep_scan(
     Always attaches ``_counts`` (baseline/strict) for CLI logging.
     ``use_screener=True`` runs the market-wide snapshot sweep (generalized
     from BO; EP runs its normal gates over the snapshot universe).
+
+    EP technical feature params mirror ``run_ep_scan``; when the feature
+    test is active the per-symbol OHLCV frame is threaded through so the
+    gates become informational and the kept list is the feature survivors.
     """
     if use_screener:
         return _execute_ep_sweep(
             select=select,
             limit=limit,
             apply_gates=apply_gates,
+            ep_features=ep_features,
+            ep_feature_keys=ep_feature_keys,
+            ep_keep_if_any=ep_keep_if_any,
+            ep_thresholds=ep_thresholds,
             on_stage=on_stage,
             batch_progress=batch_progress,
         )
@@ -210,7 +224,13 @@ def execute_ep_scan(
             payload["_failed_force"] = failed_force
         return payload
 
-    ep_rows, failed_force = _build_ep_rows(resolved, failed_force, batch_progress)
+    feature_mode = bool(ep_features) and bool(ep_feature_keys)
+    ep_rows, failed_force, df_by_symbol = _build_ep_rows(
+        resolved,
+        failed_force,
+        batch_progress,
+        collect_ohlcv=feature_mode,
+    )
 
     if not ep_rows:
         payload = {
@@ -232,6 +252,11 @@ def execute_ep_scan(
         force_keys=force_set,
         universe_source=source,
         apply_gates=apply_gates,
+        ep_features=ep_features,
+        ep_feature_keys=ep_feature_keys,
+        ep_keep_if_any=ep_keep_if_any,
+        ep_thresholds=ep_thresholds,
+        df_by_symbol=df_by_symbol,
     )
     payload = result.model_dump_selected(select)
     payload["_counts"] = {
@@ -247,22 +272,31 @@ def _build_ep_rows(
     resolved: Sequence[dict[str, Any]],
     failed_force: list[dict[str, Any]],
     batch_progress: Any = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    *,
+    collect_ohlcv: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Build normalized EP rows from resolved ticker details + OHLCV metrics.
 
     Ticker details win for name/exchange/market_cap; OHLCV provides metrics.
     Unresolvable symbols are appended to ``failed_force``.
+
+    With ``collect_ohlcv`` the per-symbol DataFrame is fetched once and
+    returned keyed by uppercase symbol (for the EP technical feature test).
     """
     if batch_progress is not None:
         batch_progress.begin_ticker(len(resolved), "EP metrics", throttle=1)
 
     ep_rows: list[dict[str, Any]] = []
+    df_by_symbol: dict[str, Any] = {}
     for i, detail in enumerate(resolved, start=1):
         symbol = detail.get("symbol", "")
         if not symbol:
             continue
         try:
-            ohlcv_row = to_ep_row(symbol)
+            ohlcv_df = None
+            if collect_ohlcv:
+                ohlcv_df = get_stock_data(symbol)
+            ohlcv_row = to_ep_row(symbol, df=ohlcv_df) if ohlcv_df is not None else to_ep_row(symbol)
             row = {
                 "name": detail.get("name", f"POLYGON:{symbol}"),
                 "symbol": symbol,
@@ -279,6 +313,8 @@ def _build_ep_rows(
                 "market_cap": detail.get("market_cap"),
                 "description": detail.get("description", ""),
             }
+            if ohlcv_df is not None and not (hasattr(ohlcv_df, "empty") and ohlcv_df.empty):
+                df_by_symbol[symbol.upper()] = ohlcv_df
             ep_rows.append(row)
         except Exception as exc:
             logger.warning("EP row build failed for %s: %s", symbol, exc)
@@ -292,7 +328,7 @@ def _build_ep_rows(
 
     if batch_progress is not None:
         batch_progress.end_ticker()
-    return ep_rows, failed_force
+    return ep_rows, failed_force, df_by_symbol
 
 
 def _execute_ep_sweep(
@@ -300,6 +336,10 @@ def _execute_ep_sweep(
     select: GateSelect,
     limit: int,
     apply_gates: bool,
+    ep_features: bool = False,
+    ep_feature_keys: Optional[Sequence[str]] = None,
+    ep_keep_if_any: bool = True,
+    ep_thresholds: Optional[EpSetupThresholds] = None,
     on_stage: Optional[StageFn] = None,
     batch_progress: Any = None,
 ) -> dict[str, Any]:
@@ -319,7 +359,10 @@ def _execute_ep_sweep(
     if on_stage is not None:
         on_stage(f"computing EP metrics ({len(resolved)} symbols)")
 
-    ep_rows, _ = _build_ep_rows(resolved, [], batch_progress)
+    feature_mode = bool(ep_features) and bool(ep_feature_keys)
+    ep_rows, _, df_by_symbol = _build_ep_rows(
+        resolved, [], batch_progress, collect_ohlcv=feature_mode,
+    )
 
     if not ep_rows:
         return {
@@ -336,6 +379,11 @@ def _execute_ep_sweep(
         force_keys=set(),
         universe_source="snapshot",
         apply_gates=apply_gates,
+        ep_features=ep_features,
+        ep_feature_keys=ep_feature_keys,
+        ep_keep_if_any=ep_keep_if_any,
+        ep_thresholds=ep_thresholds,
+        df_by_symbol=df_by_symbol,
     )
     payload = result.model_dump_selected(select)
     payload["_counts"] = {
@@ -593,6 +641,182 @@ def execute_bo_scan(
     if failed_force:
         payload["_failed_force"] = failed_force
     return payload
+
+
+def execute_zhao_scan(
+    *,
+    force_keys: Optional[Sequence[SymbolKey]] = None,
+    variant: str = "realtime",
+    benchmark: str = "SPY",
+    apply_gates: bool = True,
+    sma20_buffer_pct: float = 0.0,
+    min_margin_pct: float = 1.0,
+    min_rs_pct: float = 0.0,
+    max_high_dist_pct: float = 15.0,
+    streaks: Optional[Mapping[str, int]] = None,
+    on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
+) -> dict[str, Any]:
+    """Run 照妖鏡 Agent 1 (paste-first).
+
+    ``streaks`` maps symbol → prior consecutive-day count (loaded from the
+    ``scan_signals`` table by the jobs layer); each survivor's displayed streak
+    is ``prior + 1``. The scanner callable receives it via ``__streaks__``.
+    """
+    from stock_analyze.scanners.zhao.runner import run_zhao_scan
+
+    force_key_list: list[SymbolKey] = list(force_keys or [])
+    if not force_key_list:
+        raise ValueError("zhao scan requires non-empty force_keys (paste-first)")
+
+    if batch_progress is not None:
+        batch_progress.begin_ticker(len(force_key_list), "Resolving symbols", throttle=1)
+    resolved, failed_force = _resolve_symbols(
+        force_key_list,
+        on_stage=on_stage,
+        on_ticker=batch_progress.ticker if batch_progress is not None else None,
+    )
+    if batch_progress is not None:
+        batch_progress.end_ticker()
+
+    if not resolved:
+        payload = {
+            "ratings": [],
+            "count": 0,
+            "counts": {"5": 0, "4": 0, "3": 0, "2": 0},
+            "universe_source": "force",
+            "gates_applied": apply_gates,
+            "variant": variant,
+            "benchmark": benchmark,
+        }
+        if failed_force:
+            payload["_failed_force"] = failed_force
+        return payload
+
+    if on_stage is not None:
+        on_stage(f"running zhao scan ({variant})")
+
+    bucket = run_zhao_scan(
+        rows=resolved,
+        variant=variant,
+        benchmark=benchmark,
+        apply_gates=apply_gates,
+        sma20_buffer_pct=sma20_buffer_pct,
+        min_margin_pct=min_margin_pct,
+        min_rs_pct=min_rs_pct,
+        max_high_dist_pct=max_high_dist_pct,
+        streaks=streaks,
+        batch_progress=batch_progress,
+    )
+    payload = bucket.model_dump(mode="json")
+    payload["_counts"] = bucket.counts
+    if failed_force:
+        payload["_failed_force"] = failed_force
+    return payload
+
+
+def execute_premarket_scan(
+    *,
+    force_keys: Optional[Sequence[SymbolKey]] = None,
+    min_change_pct: float = 5.0,
+    min_vol_mult: float = 0.0,
+    cap: int = 300,
+    apply_gates: bool = True,
+    on_stage: Optional[StageFn] = None,
+    batch_progress: Any = None,
+) -> dict[str, Any]:
+    """Run the premarket grep Agent 1 (snapshot-first).
+
+    One ``fetch_market_snapshot`` call → change%-filter → sort desc → cap.
+    Survivors get name + SIC sector via Ticker Details (bounded by ``cap``);
+    when ``min_vol_mult > 0`` the 20d ADV is fetched for the volume flag.
+    Pasted symbols in ``force_keys`` union into the survivors (already handled
+    by universe resolution; force rows bypass the change gate via the runner).
+    """
+    from stock_analyze.data.polygon import (
+        batch_get_stock_data,
+        fetch_market_snapshot,
+        resolve_batch_details,
+    )
+    from stock_analyze.scanners.premarket.runner import (
+        run_premarket_scan,
+        select_premarket_candidates,
+    )
+
+    if on_stage is not None:
+        on_stage("fetching market snapshot (Polygon)")
+    snapshot = fetch_market_snapshot()
+    if not snapshot:
+        return _empty_premarket_payload(apply_gates, min_change_pct)
+
+    candidates = select_premarket_candidates(
+        snapshot, min_change_pct=min_change_pct, cap=cap, apply_gates=apply_gates,
+    )
+
+    # Attach name + SIC sector to the capped survivors (bounded detail calls).
+    details = resolve_batch_details([r["symbol"] for r in candidates])
+    for row in candidates:
+        d = details.get(str(row["symbol"]).upper())
+        if d is not None:
+            row["name"] = d.get("name", "")
+            row["sector"] = d.get("sic_description") or "Unknown"
+            row["exchange"] = d.get("exchange", row.get("exchange", "NASDAQ"))
+
+    # Union pasted symbols that are not already survivors (force rows).
+    force_set = {(s.upper(), e.upper()) for s, e in (force_keys or [])}
+    survivor_symbols = {str(r["symbol"]).upper() for r in candidates}
+    force_rows: list[dict[str, Any]] = []
+    for symbol, exchange in force_set:
+        if symbol in survivor_symbols:
+            continue
+        d = details.get(symbol) or resolve_batch_details([symbol]).get(symbol)
+        if d is not None:
+            force_rows.append({
+                "symbol": symbol,
+                "exchange": exchange,
+                "name": d.get("name", ""),
+                "sector": d.get("sic_description") or "Unknown",
+                "change_pct": 0.0,  # force-included; bypasses the change gate
+                "price": None,
+                "volume": None,
+                "adv_20d": None,
+                "force": True,
+            })
+
+    # Optional volume flag: 20d avg volume for survivors when min_vol_mult > 0.
+    if min_vol_mult > 0:
+        survivors = [(r["symbol"], r.get("exchange") or "NASDAQ") for r in candidates]
+        if survivors:
+            if on_stage is not None:
+                on_stage(f"fetching ADV ({len(survivors)} symbols)")
+            ohlcv_map = batch_get_stock_data(survivors, n_bars=30)
+            for row in candidates:
+                df = ohlcv_map.get(str(row["symbol"]).upper())
+                if df is not None and not (hasattr(df, "empty") and df.empty) and len(df) >= 2:
+                    row["adv_20d"] = float(df["volume"].tail(20).mean())
+
+    bucket = run_premarket_scan(
+        [*candidates, *force_rows],
+        min_change_pct=min_change_pct,
+        min_vol_mult=min_vol_mult,
+        cap=cap,
+        apply_gates=apply_gates,
+        force_set=force_set,
+    )
+    payload = bucket.model_dump(mode="json")
+    payload["_counts"] = bucket.counts
+    return payload
+
+
+def _empty_premarket_payload(apply_gates: bool, min_change_pct: float) -> dict[str, Any]:
+    return {
+        "ratings": [],
+        "count": 0,
+        "counts": {"5": 0, "4": 0, "3": 0, "2": 0},
+        "universe_source": "snapshot",
+        "gates_applied": apply_gates,
+        "min_change_pct": min_change_pct,
+    }
 
 
 def _as_structural_model(stock: Any) -> Any:

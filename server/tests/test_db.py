@@ -44,3 +44,31 @@ async def test_bootstrap_and_roundtrip():
         assert any(r["id"] == run_id for r in runs)
     finally:
         await repo.pool.close()
+
+
+@pytest.mark.asyncio
+async def test_scan_signals_record_and_streaks():
+    from app.db import connect_repo
+
+    url = os.environ["TEST_DATABASE_URL"]
+    repo = await connect_repo(url)
+    try:
+        await repo.record_scan_signals(["AAPL", "MSFT"], "zhao", "daily", signal_date="2026-08-06")
+        await repo.record_scan_signals(["AAPL"], "zhao", "daily", signal_date="2026-08-07")
+        await repo.record_scan_signals(["AAPL", "MSFT"], "zhao", "daily", signal_date="2026-08-08")
+
+        # Prior-to-as_of streaks: as_of 2026-08-09 counts the 3 prior days.
+        streaks = await repo.get_scan_streaks(["AAPL", "MSFT", "TSLA"], "zhao", "daily", as_of="2026-08-09")
+        assert streaks["AAPL"] == 3
+        assert streaks["MSFT"] == 2   # 08-06, 08-08 — broken by 08-07
+        assert "TSLA" not in streaks
+
+        # as_of 2026-08-08 excludes today's row → prior = 2.
+        prior = await repo.get_scan_streaks(["AAPL"], "zhao", "daily", as_of="2026-08-08")
+        assert prior["AAPL"] == 2
+
+        # Re-recording the same day is idempotent.
+        written = await repo.record_scan_signals(["AAPL"], "zhao", "daily", signal_date="2026-08-08")
+        assert written == 0
+    finally:
+        await repo.pool.close()

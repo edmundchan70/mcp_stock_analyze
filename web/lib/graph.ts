@@ -28,10 +28,14 @@ export function scannerGroups(family: string): string[] {
       return ["Family", "VCP"];
     case "bo":
       return ["Family", "BO"];
+    case "zhao":
+      return ["Family", "Zhao"];
+    case "premarket":
+      return ["Family", "Premarket"];
     case "custom":
       return ["Family", "Custom"];
     default:
-      return ["Family", "EP", "EP baseline", "EP strict"];
+      return ["Family", "EP", "EP baseline", "EP strict", "EP technical"];
   }
 }
 
